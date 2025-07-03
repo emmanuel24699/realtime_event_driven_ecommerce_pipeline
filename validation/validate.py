@@ -99,3 +99,12 @@ def log_to_s3(file_key, message, status):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_key = f"logs/validate/{file_key.split('/')[-1]}_{timestamp}_{status}.log"
     s3_client.put_object(Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8"))
+
+
+def move_to_rejected(file_key):
+    s3_client.copy_object(
+        Bucket=BUCKET_NAME,
+        CopySource={"Bucket": BUCKET_NAME, "Key": file_key},
+        Key=f"rejected/{file_key.split('/')[-1]}",
+    )
+    s3_client.delete_object(Bucket=BUCKET_NAME, Key=file_key)
