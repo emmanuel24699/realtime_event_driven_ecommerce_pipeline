@@ -10,3 +10,73 @@ sns_client = boto3.client("sns")
 
 BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:985539772768:lab6-pipeline-failure-notifications"
+
+
+def validate_file(file_key):
+    # Define required columns
+    required_columns = {
+        "orders": ["order_id", "user_id", "status", "created_at", "num_of_item"],
+        "products": ["id", "category", "retail_price"],
+        "order_items": [
+            "id",
+            "order_id",
+            "user_id",
+            "product_id",
+            "status",
+            "created_at",
+            "sale_price",
+        ],
+    }
+
+    # Determine file type
+    file_type = (
+        file_key.split("/")[-1].split("_")[0]
+        if "order_items" not in file_key
+        else "order_items"
+    )
+    file_type = "products" if "products" in file_key else file_type
+
+    # Download file from S3
+    local_file = f"/tmp/{file_key.split('/')[-1]}"
+    s3_client.download_file(BUCKET_NAME, file_key, local_file)
+
+    # Read CSV
+    try:
+        df = pd.read_csv(local_file)
+    except Exception as e:
+        log_error(file_key, f"Failed to read CSV: {str(e)}")
+        move_to_rejected(file_key)
+        return False
+
+    # Check required columns
+    missing_columns = [
+        col for col in required_columns.get(file_type, []) if col not in df.columns
+    ]
+    if missing_columns:
+        log_error(file_key, f"Missing columns: {missing_columns}")
+        move_to_rejected(file_key)
+        return False
+
+    # Validate data types
+    try:
+        if file_type == "orders":
+            df["order_id"] = df["order_id"].astype(int)
+            df["num_of_item"] = df["num_of_item"].astype(int)
+            pd.to_datetime(df["created_at"])
+        elif file_type == "products":
+            df["id"] = df["id"].astype(int)
+            df["retail_price"] = df["retail_price"].astype(float)
+        elif file_type == "order_items":
+            df["id"] = df["id"].astype(int)
+            df["order_id"] = df["order_id"].astype(int)
+            df["product_id"] = df["product_id"].astype(int)
+            df["sale_price"] = df["sale_price"].astype(float)
+            pd.to_datetime(df["created_at"])
+    except Exception as e:
+        log_error(file_key, f"Data type validation failed: {str(e)}")
+        move_to_rejected(file_key)
+        return False
+
+    # Log success
+    log_success(file_key, "Validation successful")
+    return True
