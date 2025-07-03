@@ -1,21 +1,18 @@
 {
-  "Comment": "E-commerce Data Pipeline Orchestration",
-  "StartAt": "ValidateFile",
+  "Comment": "E-commerce pipeline orchestration",
+  "StartAt": "ValidateTask",
   "States": {
-    "ValidateFile": {
+    "ValidateTask": {
       "Type": "Task",
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
-        "LaunchType": "EC2",
+        "LaunchType": "FARGATE",
         "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
         "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-validation-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": [
-              "subnet-<private-subnet-1-id>",
-              "subnet-<private-subnet-2-id>"
-            ],
-            "SecurityGroups": ["sg-<lab6-ecs-sg-id>"],
+            "Subnets": ["subnet-06ea69061a23f5360", "subnet-012d1aa4f3bd10af8"],
+            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
             "AssignPublicIp": "DISABLED"
           }
         },
@@ -26,7 +23,7 @@
               "Environment": [
                 {
                   "Name": "EVENT_DATA",
-                  "Value.$": "States.JsonToString($)"
+                  "Value": "$"
                 }
               ]
             }
@@ -35,45 +32,42 @@
       },
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
+          "ErrorEquals": ["States.ALL"],
           "IntervalSeconds": 5,
           "MaxAttempts": 3,
-          "BackoffRate": 2.0
+          "BackoffRate": 2
         }
       ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "ValidationFailed"
+          "Next": "NotifyFailure"
         }
       ],
-      "Next": "CheckValidationResult"
+      "Next": "ValidationChoice"
     },
-    "CheckValidationResult": {
+    "ValidationChoice": {
       "Type": "Choice",
       "Choices": [
         {
           "Variable": "$.Output",
           "BooleanEquals": true,
-          "Next": "TransformFile"
+          "Next": "TransformTask"
         }
       ],
-      "Default": "ValidationFailed"
+      "Default": "NotifyFailure"
     },
-    "TransformFile": {
+    "TransformTask": {
       "Type": "Task",
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
-        "LaunchType": "EC2",
+        "LaunchType": "FARGATE",
         "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
         "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-transformation-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": [
-              "subnet-<private-subnet-1-id>",
-              "subnet-<private-subnet-2-id>"
-            ],
-            "SecurityGroups": ["sg-<lab6-ecs-sg-id>"],
+            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
+            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
             "AssignPublicIp": "DISABLED"
           }
         },
@@ -84,7 +78,7 @@
               "Environment": [
                 {
                   "Name": "EVENT_DATA",
-                  "Value.$": "States.JsonToString($)"
+                  "Value": "$"
                 }
               ]
             }
@@ -93,37 +87,27 @@
       },
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 5,
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
           "MaxAttempts": 3,
-          "BackoffRate": 2.0
+          "BackoffRate": 2
         }
       ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "TransformationFailed"
+          "Next": "NotifyFailure"
         }
       ],
       "Next": "Success"
     },
-    "ValidationFailed": {
+    "NotifyFailure": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "arn:aws:sns:us-east-1:985539772768:lab6-pipeline-failure-notifications",
-        "Message": "Validation failed for file: $.file_key",
-        "Subject": "E-commerce Pipeline Validation Failure"
-      },
-      "Next": "SendToDLQ"
-    },
-    "TransformationFailed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sns:publish",
-      "Parameters": {
-        "TopicArn": "arn:aws:sns:us-east-1:985539772768:lab6-pipeline-failure-notifications",
-        "Message": "Transformation failed for file: $.file_key",
-        "Subject": "E-commerce Pipeline Transformation Failure"
+        "Message": "Pipeline failed for file: $.Records[0].s3.object.key",
+        "Subject": "E-commerce Pipeline Failure"
       },
       "Next": "SendToDLQ"
     },
@@ -132,7 +116,10 @@
       "Resource": "arn:aws:states:::sqs:sendMessage",
       "Parameters": {
         "QueueUrl": "https://sqs.us-east-1.amazonaws.com/985539772768/lab6-pipeline-dlq",
-        "MessageBody.$": "States.JsonToString($)"
+        "MessageBody": {
+          "FileKey": "$.Records[0].s3.object.key",
+          "Error": "$.Error"
+        }
       },
       "End": true
     },
