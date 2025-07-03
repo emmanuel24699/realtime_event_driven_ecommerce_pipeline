@@ -1,0 +1,54 @@
+name: CI/CD Pipeline for Ecommerce Data Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push validation image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: lab6-ecommerce-validation
+          IMAGE_TAG: latest
+        run: |
+          cd validation
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Build and push transformation image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: lab6-ecommerce-transformation
+          IMAGE_TAG: latest
+        run: |
+          cd transformation
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Update ECS task definitions
+        run: |
+          aws ecs register-task-definition --cli-input-json file://validation/task-definition.json
+          aws ecs register-task-definition --cli-input-json file://transformation/task-definition.json
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-validation-service --force-new-deployment
+          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-transformation-service --force-new-deployment
