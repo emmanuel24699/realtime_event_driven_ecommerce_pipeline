@@ -103,3 +103,38 @@ def transform_file(file_key):
         write_to_dynamodb(order_kpis, "OrderKPIs", ["order_date"])
 
     log_success(file_key, "Transformation successful")
+
+
+def write_to_dynamodb(df, table_name, key_columns):
+    table = dynamodb.Table(table_name)
+    for row in df.collect():
+        item = {k: v for k, v in row.asDict().items() if v is not None}
+        try:
+            table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(" + key_columns[0] + ")",
+            )
+        except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+            table.update_item(
+                Key={k: item[k] for k in key_columns},
+                UpdateExpression="SET "
+                + ", ".join([f"{k} = :{k}" for k in item if k not in key_columns]),
+                ExpressionAttributeValues={
+                    f":{k}": v for k, v in item.items() if k not in key_columns
+                },
+            )
+
+
+def log_success(file_key, message):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_key = f"logs/transform/{file_key.split('/')[-1]}_{timestamp}_success.log"
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8"))
+
+
+if __name__ == "__main__":
+    event = json.loads(os.environ.get("EVENT_DATA", "{}"))
+    file_key = (
+        event.get("Records", [{}])[0].get("s3", {}).get("object", {}).get("key", "")
+    )
+    if file_key.startswith("input/"):
+        transform_file(file_key)
