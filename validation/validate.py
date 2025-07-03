@@ -80,3 +80,22 @@ def validate_file(file_key):
     # Log success
     log_success(file_key, "Validation successful")
     return True
+
+
+def log_error(file_key, message):
+    log_to_s3(file_key, message, "error")
+    sns_client.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Message=f"Validation failed for {file_key}: {message}",
+        Subject="Pipeline Validation Failure",
+    )
+
+
+def log_success(file_key, message):
+    log_to_s3(file_key, message, "success")
+
+
+def log_to_s3(file_key, message, status):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_key = f"logs/validate/{file_key.split('/')[-1]}_{timestamp}_{status}.log"
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8"))
