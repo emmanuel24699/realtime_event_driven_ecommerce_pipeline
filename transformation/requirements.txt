@@ -1,0 +1,4 @@
+pandas==1.5.3
+boto3==1.34.0
+delta-spark==2.4.0
+pyspark==3.4.0
