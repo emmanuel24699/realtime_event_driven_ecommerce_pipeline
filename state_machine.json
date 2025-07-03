@@ -1,0 +1,143 @@
+{
+  "Comment": "E-commerce Data Pipeline Orchestration",
+  "StartAt": "ValidateFile",
+  "States": {
+    "ValidateFile": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "EC2",
+        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-validation-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "subnet-<private-subnet-1-id>",
+              "subnet-<private-subnet-2-id>"
+            ],
+            "SecurityGroups": ["sg-<lab6-ecs-sg-id>"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "validation-container",
+              "Environment": [
+                {
+                  "Name": "EVENT_DATA",
+                  "Value.$": "States.JsonToString($)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ValidationFailed"
+        }
+      ],
+      "Next": "CheckValidationResult"
+    },
+    "CheckValidationResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Output",
+          "BooleanEquals": true,
+          "Next": "TransformFile"
+        }
+      ],
+      "Default": "ValidationFailed"
+    },
+    "TransformFile": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "EC2",
+        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-transformation-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "subnet-<private-subnet-1-id>",
+              "subnet-<private-subnet-2-id>"
+            ],
+            "SecurityGroups": ["sg-<lab6-ecs-sg-id>"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "transformation-container",
+              "Environment": [
+                {
+                  "Name": "EVENT_DATA",
+                  "Value.$": "States.JsonToString($)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "TransformationFailed"
+        }
+      ],
+      "Next": "Success"
+    },
+    "ValidationFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:985539772768:lab6-pipeline-failure-notifications",
+        "Message": "Validation failed for file: $.file_key",
+        "Subject": "E-commerce Pipeline Validation Failure"
+      },
+      "Next": "SendToDLQ"
+    },
+    "TransformationFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:985539772768:lab6-pipeline-failure-notifications",
+        "Message": "Transformation failed for file: $.file_key",
+        "Subject": "E-commerce Pipeline Transformation Failure"
+      },
+      "Next": "SendToDLQ"
+    },
+    "SendToDLQ": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/985539772768/lab6-pipeline-dlq",
+        "MessageBody.$": "States.JsonToString($)"
+      },
+      "End": true
+    },
+    "Success": {
+      "Type": "Succeed"
+    }
+  }
+}
