@@ -50,5 +50,5 @@ jobs:
 
       - name: Deploy to ECS
         run: |
-          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-validation-service --force-new-deployment
-          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-transformation-service --force-new-deployment
+          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-validation-task-service --force-new-deployment
+          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-transformation-task-service --force-new-deployment
