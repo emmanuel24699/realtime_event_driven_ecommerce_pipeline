@@ -11,7 +11,7 @@ s3_client = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 
-# Initialize Spark with Delta Lake
+# Initialize Spark
 spark = (
     SparkSession.builder.appName("EcommerceKPITransformation")
     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
