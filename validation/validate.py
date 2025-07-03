@@ -108,3 +108,12 @@ def move_to_rejected(file_key):
         Key=f"rejected/{file_key.split('/')[-1]}",
     )
     s3_client.delete_object(Bucket=BUCKET_NAME, Key=file_key)
+
+
+if __name__ == "__main__":
+    event = json.loads(os.environ.get("EVENT_DATA", "{}"))
+    file_key = (
+        event.get("Records", [{}])[0].get("s3", {}).get("object", {}).get("key", "")
+    )
+    if file_key.startswith("input/"):
+        validate_file(file_key)
