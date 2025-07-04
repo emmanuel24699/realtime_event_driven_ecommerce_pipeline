@@ -17,7 +17,7 @@ BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 # Added spark.driver.host config to prevent UnknownHostException in containers
 spark = (
     SparkSession.builder.appName("EcommerceKPITransformation")
-    .config("spark.driver.host", "127.0.0.1")
+    .config("spark.driver.host", "localhost")
     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
     .config(
         "spark.sql.catalog.spark_catalog",
