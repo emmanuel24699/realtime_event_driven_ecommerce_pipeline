@@ -1,91 +1,37 @@
-name: CI/CD Pipeline for Ecommerce Data Pipeline
-
+name: CI/CD Pipeline
 on:
   push:
     branches:
       - main
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: actions/checkout@v3
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-
       - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Create or verify ECR repository for validation
+        run: aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 985539772768.dkr.ecr.us-east-1.amazonaws.com
+      - name: Create ECR Repositories
         run: |
-          aws ecr describe-repositories --repository-names lab6-ecommerce-validation --region us-east-1 2>/dev/null || \
-          aws ecr create-repository --repository-name lab6-ecommerce-validation --region us-east-1
-
-      - name: Build and push validation image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lab6-ecommerce-validation
-          IMAGE_TAG: latest
+          for repo in lab6-ecommerce-validation lab6-ecommerce-staging lab6-ecommerce-transformation lab6-ecommerce-dynamodb; do
+            aws ecr describe-repositories --repository-names $repo || aws ecr create-repository --repository-name $repo
+          done
+      - name: Build and Push Docker Images
         run: |
-          cd validation
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-      - name: Create or verify ECR repository for staging
+          for dir in validation staging kpi_computation dynamodb_write; do
+            cd $dir
+            docker build -t 985539772768.dkr.ecr.us-east-1.amazonaws.com/lab6-ecommerce-$dir:latest .
+            docker push 985539772768.dkr.ecr.us-east-1.amazonaws.com/lab6-ecommerce-$dir:latest
+            cd ..
+          done
+      - name: Register Task Definitions
         run: |
-          aws ecr describe-repositories --repository-names lab6-ecommerce-staging --region us-east-1 2>/dev/null || \
-          aws ecr create-repository --repository-name lab6-ecommerce-staging --region us-east-1
-
-      - name: Build and push staging image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lab6-ecommerce-staging
-          IMAGE_TAG: latest
-        run: |
-          cd staging
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-      - name: Create or verify ECR repository for transformation
-        run: |
-          aws ecr describe-repositories --repository-names lab6-ecommerce-transformation --region us-east-1 2>/dev/null || \
-          aws ecr create-repository --repository-name lab6-ecommerce-transformation --region us-east-1
-
-      - name: Build and push transformation image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lab6-ecommerce-transformation
-          IMAGE_TAG: latest
-        run: |
-          cd kpi_computation
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-      - name: Create or verify ECR repository for dynamodb
-        run: |
-          aws ecr describe-repositories --repository-names lab6-ecommerce-dynamodb --region us-east-1 2>/dev/null || \
-          aws ecr create-repository --repository-name lab6-ecommerce-dynamodb --region us-east-1
-
-      - name: Build and push dynamodb image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lab6-ecommerce-dynamodb
-          IMAGE_TAG: latest
-        run: |
-          cd dynamodb_write
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-      - name: Update ECS task definitions
-        run: |
-          aws ecs register-task-definition --cli-input-json file://validation/task-definition.json
-          aws ecs register-task-definition --cli-input-json file://staging/task-definition.json
-          aws ecs register-task-definition --cli-input-json file://kpi_computation/task-definition.json
-          aws ecs register-task-definition --cli-input-json file://dynamodb_write/task-definition.json
+          for dir in validation staging kpi_computation dynamodb_write; do
+            aws ecs register-task-definition --cli-input-json file://$dir/task-definition.json
+          done
