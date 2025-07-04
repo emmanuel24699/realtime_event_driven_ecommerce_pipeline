@@ -47,8 +47,3 @@ jobs:
         run: |
           aws ecs register-task-definition --cli-input-json file://validation/task-definition.json
           aws ecs register-task-definition --cli-input-json file://transformation/task-definition.json
-
-      - name: Deploy to ECS
-        run: |
-          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-validation-task-service --force-new-deployment
-          aws ecs update-service --cluster lab6-ecommerce-cluster --service lab6-transformation-task-service --force-new-deployment
