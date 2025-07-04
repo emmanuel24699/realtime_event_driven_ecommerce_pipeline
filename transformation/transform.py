@@ -13,8 +13,6 @@ s3_client = boto3.client("s3", region_name="us-east-1")
 dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 
-# Initialize Spark
-# Added spark.driver.host config to prevent UnknownHostException in containers
 spark = (
     SparkSession.builder.appName("EcommerceKPITransformation")
     .config("spark.driver.host", "localhost")
@@ -22,6 +20,10 @@ spark = (
     .config(
         "spark.sql.catalog.spark_catalog",
         "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    )
+    .config(
+        "spark.jars.packages",
+        "io.delta:delta-core_2.12:2.4.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
     )
     .getOrCreate()
 )
@@ -61,6 +63,7 @@ def transform_file(file_key):
     else:  # order_items
         key = "id"
 
+    # The s3a:// protocol requires the hadoop-aws package configured above
     delta_path = f"s3a://{BUCKET_NAME}/staging/fact/{file_type}"
 
     # Write to Delta Lake using a merge operation for idempotency
@@ -191,8 +194,6 @@ if __name__ == "__main__":
     try:
         event = json.loads(event_str)
 
-        # FIXED: Correctly parse the file key from the EventBridge event structure.
-        # The key is inside event['detail']['object']['key'], not event['Records'].
         file_key = event.get("detail", {}).get("object", {}).get("key", "")
 
         if file_key and file_key.startswith("input/"):
