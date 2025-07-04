@@ -1,23 +1,27 @@
 FROM python:3.9-slim
 
-# Install a newer version of Java available in this OS and other dependencies
+# Install Java 11 (compatible with Spark 3.x) and dependencies
 RUN apt-get update && apt-get install -y \
-    openjdk-17-jre-headless \
+    openjdk-11-jre-headless \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the correct JAVA_HOME path for OpenJDK 17
-ENV JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+ENV JAVA_HOME="/usr/lib/jvm/java-11-openjdk-amd64"
 
-# Set the working directory
+# Fix hostname resolution (for Spark to not fail)
+RUN echo "127.0.0.1 $(hostname)" >> /etc/hosts
+
+# Set working directory
 WORKDIR /app
 
-# Copy and install Python requirements
+# Install Python packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your application code
+# Copy app
 COPY transform.py .
 
-# Define the default command
+# Set hostname override for Spark
+ENV SPARK_LOCAL_HOSTNAME=localhost
+
 CMD ["python", "transform.py"]
