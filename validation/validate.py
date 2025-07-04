@@ -3,6 +3,7 @@ import boto3
 import os
 from datetime import datetime
 import json
+import sys
 
 # Initialize AWS clients with region
 s3_client = boto3.client("s3", region_name="us-east-1")
@@ -39,7 +40,11 @@ def validate_file(file_key):
 
     # Download file from S3
     local_file = f"/tmp/{file_name}"
-    s3_client.download_file(BUCKET_NAME, file_key, local_file)
+    try:
+        s3_client.download_file(BUCKET_NAME, file_key, local_file)
+    except Exception as e:
+        log_error(file_key, f"Failed to download file: {str(e)}")
+        return {"Output": False}
 
     # Read CSV
     try:
@@ -84,21 +89,31 @@ def log_to_s3(file_key, message, status):
 
 
 def move_to_rejected(file_key):
-    s3_client.copy_object(
-        Bucket=BUCKET_NAME,
-        CopySource={"Bucket": BUCKET_NAME, "Key": file_key},
-        Key=f"rejected/{file_key.split('/')[-1]}",
-    )
-    s3_client.delete_object(Bucket=BUCKET_NAME, Key=file_key)
+    try:
+        s3_client.copy_object(
+            Bucket=BUCKET_NAME,
+            CopySource={"Bucket": BUCKET_NAME, "Key": file_key},
+            Key=f"rejected/{file_key.split('/')[-1]}",
+        )
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=file_key)
+    except Exception as e:
+        log_error(file_key, f"Failed to move to rejected: {str(e)}")
 
 
 if __name__ == "__main__":
     event_string = os.environ.get("EVENT_DATA", "{}")
-    event = json.loads(event_string)
+    try:
+        event = json.loads(event_string)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"Output": False}), flush=True)
+        sys.exit(1)
 
     # Extract file key from the S3 event detail
     file_key = event.get("detail", {}).get("object", {}).get("key", "")
 
     if file_key.startswith("input/"):
         result = validate_file(file_key)
-        print(json.dumps(result))
+        print(json.dumps(result), flush=True)
+    else:
+        print(json.dumps({"Output": False}), flush=True)
+        sys.exit(1)
