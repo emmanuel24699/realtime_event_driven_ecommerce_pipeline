@@ -1,4 +1,4 @@
-pandas
+pyspark
 boto3
 deltalake
 s3fs
