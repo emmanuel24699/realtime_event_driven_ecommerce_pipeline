@@ -1,0 +1,109 @@
+import boto3
+from datetime import datetime
+from pyspark.sql import SparkSession
+from delta.tables import DeltaTable
+import json
+from pyspark.sql.functions import col, sum as sum_, countDistinct, avg, when
+
+# Initialize AWS clients
+s3_client = boto3.client("s3", region_name="us-east-1")
+BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
+
+# Initialize Spark with Delta Lake
+spark = (
+    SparkSession.builder.appName("EcommerceKPIComputation")
+    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    .config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    )
+    .getOrCreate()
+)
+
+
+def compute_kpis(file_key):
+    if "order_items" not in file_key:
+        log_success(file_key, "No KPIs to compute for non-order_items file")
+        return
+
+    # Load fact tables
+    try:
+        orders_df = DeltaTable.forPath(
+            spark, f"s3a://{BUCKET_NAME}/staging/fact/orders"
+        ).toDF()
+        order_items_df = DeltaTable.forPath(
+            spark, f"s3a://{BUCKET_NAME}/staging/fact/order_items"
+        ).toDF()
+        products_df = DeltaTable.forPath(
+            spark, f"s3a://{BUCKET_NAME}/staging/fact/products"
+        ).toDF()
+    except Exception as e:
+        log_error(file_key, f"Failed to load fact tables: {str(e)}")
+        raise e
+
+    # Join tables
+    joined_df = order_items_df.join(
+        orders_df, order_items_df.order_id == orders_df.order_id, "inner"
+    ).join(products_df, order_items_df.product_id == products_df.id, "inner")
+
+    # Category-Level KPIs
+    category_kpis = joined_df.groupBy("category", "order_date").agg(
+        sum_(when(col("status") != "returned", col("sale_price")).otherwise(0)).alias(
+            "daily_revenue"
+        ),
+        avg(
+            joined_df.groupBy("category", "order_date", "order_id").sum("sale_price")
+        ).alias("avg_order_value"),
+        (
+            countDistinct(when(col("status") == "returned", col("order_id")))
+            / countDistinct("order_id")
+        ).alias("avg_return_rate"),
+    )
+
+    # Order-Level KPIs
+    order_kpis = joined_df.groupBy("order_date").agg(
+        countDistinct("order_id").alias("total_orders"),
+        sum_(when(col("status") != "returned", col("sale_price")).otherwise(0)).alias(
+            "total_revenue"
+        ),
+        sum_(col("num_of_item")).alias("total_items_sold"),
+        (
+            countDistinct(when(col("status") == "returned", col("order_id")))
+            / countDistinct("order_id")
+        ).alias("return_rate"),
+        countDistinct("user_id").alias("unique_customers"),
+    )
+
+    # Write KPIs to S3
+    try:
+        category_kpis.write.format("parquet").partitionBy("order_date").mode(
+            "append"
+        ).save(f"s3a://{BUCKET_NAME}/staging/kpis/category")
+        order_kpis.write.format("parquet").partitionBy("order_date").mode(
+            "append"
+        ).save(f"s3a://{BUCKET_NAME}/staging/kpis/order")
+    except Exception as e:
+        log_error(file_key, f"Failed to write KPIs: {str(e)}")
+        raise e
+
+    log_success(file_key, "KPI computation successful")
+
+
+def log_error(file_key, message):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_key = f"logs/transform/{file_key.split('/')[-1]}_{timestamp}_error.log"
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8"))
+
+
+def log_success(file_key, message):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_key = f"logs/transform/{file_key.split('/')[-1]}_{timestamp}_success.log"
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8"))
+
+
+if __name__ == "__main__":
+    event_string = os.environ.get("EVENT_DATA", "{}")
+    event = json.loads(event_string)
+    file_key = event.get("detail", {}).get("object", {}).get("key", "")
+    if file_key.startswith("input/"):
+        compute_kpis(file_key)

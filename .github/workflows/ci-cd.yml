@@ -33,17 +33,39 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
+      - name: Build and push staging image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: lab6-ecommerce-staging
+          IMAGE_TAG: latest
+        run: |
+          cd staging
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
       - name: Build and push transformation image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: lab6-ecommerce-transformation
           IMAGE_TAG: latest
         run: |
-          cd transformation
+          cd kpi_computation
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Build and push dynamodb image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: lab6-ecommerce-dynamodb
+          IMAGE_TAG: latest
+        run: |
+          cd dynamodb_write
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
       - name: Update ECS task definitions
         run: |
           aws ecs register-task-definition --cli-input-json file://validation/task-definition.json
-          aws ecs register-task-definition --cli-input-json file://transformation/task-definition.json
+          aws ecs register-task-definition --cli-input-json file://staging/task-definition.json
+          aws ecs register-task-definition --cli-input-json file://kpi_computation/task-definition.json
+          aws ecs register-task-definition --cli-input-json file://dynamodb_write/task-definition.json

@@ -1,25 +1,26 @@
 {
-  "family": "lab6-validation-task",
+  "family": "lab6-staging-task",
   "networkMode": "awsvpc",
   "containerDefinitions": [
     {
-      "name": "validation-container",
-      "image": "985539772768.dkr.ecr.us-east-1.amazonaws.com/lab6-ecommerce-validation:latest",
+      "name": "staging-container",
+      "image": "985539772768.dkr.ecr.us-east-1.amazonaws.com/lab6-ecommerce-staging:latest",
       "essential": true,
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/lab6-ecommerce",
           "awslogs-region": "us-east-1",
-          "awslogs-stream-prefix": "validation"
+          "awslogs-stream-prefix": "staging"
         }
       },
-      "command": ["python", "validate.py"]
+      "environment": [{ "name": "SPARK_LOCAL_IP", "value": "127.0.0.1" }],
+      "command": ["python", "stage.py"]
     }
   ],
   "requiresCompatibilities": ["FARGATE"],
   "executionRoleArn": "arn:aws:iam::985539772768:role/lab6-ecs-task-role",
   "taskRoleArn": "arn:aws:iam::985539772768:role/lab6-ecs-task-role",
-  "cpu": "256",
-  "memory": "512"
+  "cpu": "512",
+  "memory": "1024"
 }
