@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 import json
 
-# Initialize AWS clients
+# Initialize AWS clients with region
 s3_client = boto3.client("s3", region_name="us-east-1")
 sns_client = boto3.client("sns", region_name="us-east-1")
 
@@ -29,15 +29,16 @@ def validate_file(file_key):
     }
 
     # Determine file type
-    file_type = (
-        file_key.split("/")[-1].split("_")[0]
-        if "order_items" not in file_key
-        else "order_items"
-    )
-    file_type = "products" if "products" in file_key else file_type
+    file_name = file_key.split("/")[-1]
+    if "order_items" in file_name:
+        file_type = "order_items"
+    elif "products" in file_name:
+        file_type = "products"
+    else:
+        file_type = file_name.split("_")[0]
 
     # Download file from S3
-    local_file = f"/tmp/{file_key.split('/')[-1]}"
+    local_file = f"/tmp/{file_name}"
     s3_client.download_file(BUCKET_NAME, file_key, local_file)
 
     # Read CSV
@@ -46,38 +47,19 @@ def validate_file(file_key):
     except Exception as e:
         log_error(file_key, f"Failed to read CSV: {str(e)}")
         move_to_rejected(file_key)
-        return False
+        raise e
 
     # Check required columns
     missing_columns = [
         col for col in required_columns.get(file_type, []) if col not in df.columns
     ]
     if missing_columns:
-        log_error(file_key, f"Missing columns: {missing_columns}")
+        error_message = f"Missing columns: {missing_columns}"
+        log_error(file_key, error_message)
         move_to_rejected(file_key)
-        return False
+        raise ValueError(error_message)
 
-    # Validate data types
-    try:
-        if file_type == "orders":
-            df["order_id"] = df["order_id"].astype(int)
-            df["num_of_item"] = df["num_of_item"].astype(int)
-            pd.to_datetime(df["created_at"])
-        elif file_type == "products":
-            df["id"] = df["id"].astype(int)
-            df["retail_price"] = df["retail_price"].astype(float)
-        elif file_type == "order_items":
-            df["id"] = df["id"].astype(int)
-            df["order_id"] = df["order_id"].astype(int)
-            df["product_id"] = df["product_id"].astype(int)
-            df["sale_price"] = df["sale_price"].astype(float)
-            pd.to_datetime(df["created_at"])
-    except Exception as e:
-        log_error(file_key, f"Data type validation failed: {str(e)}")
-        move_to_rejected(file_key)
-        return False
-
-    # Log success
+    # Log success and return True
     log_success(file_key, "Validation successful")
     return True
 
@@ -111,9 +93,11 @@ def move_to_rejected(file_key):
 
 
 if __name__ == "__main__":
-    event = json.loads(os.environ.get("EVENT_DATA", "{}"))
-    file_key = (
-        event.get("Records", [{}])[0].get("s3", {}).get("object", {}).get("key", "")
-    )
+    event_string = os.environ.get("EVENT_DATA", "{}")
+    event = json.loads(event_string)
+
+    # Extract file key from the S3 event detail
+    file_key = event.get("detail", {}).get("object", {}).get("key", "")
+
     if file_key.startswith("input/"):
         validate_file(file_key)
