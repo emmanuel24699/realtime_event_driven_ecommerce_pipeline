@@ -1,26 +1,28 @@
 {
   "family": "lab6-staging-task",
-  "networkMode": "awsvpc",
   "containerDefinitions": [
     {
       "name": "staging-container",
       "image": "985539772768.dkr.ecr.us-east-1.amazonaws.com/lab6-ecommerce-staging:latest",
       "essential": true,
+      "environment": [],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/lab6-ecommerce",
+          "awslogs-group": "/ecs/lab6-ecommerce/staging",
           "awslogs-region": "us-east-1",
-          "awslogs-stream-prefix": "staging"
+          "awslogs-stream-prefix": "staging",
+          "awslogs-create-group": "true"
         }
       },
-      "environment": [{ "name": "SPARK_LOCAL_IP", "value": "127.0.0.1" }],
-      "command": ["python", "stage.py"]
+      "memory": 2048,
+      "cpu": 1024
     }
   ],
-  "requiresCompatibilities": ["FARGATE"],
-  "executionRoleArn": "arn:aws:iam::985539772768:role/lab6-ecs-task-role",
+  "executionRoleArn": "arn:aws:iam::985539772768:role/lab6-ecs-task-execution-role",
   "taskRoleArn": "arn:aws:iam::985539772768:role/lab6-ecs-task-role",
-  "cpu": "512",
-  "memory": "1024"
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048"
 }
