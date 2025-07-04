@@ -5,6 +5,7 @@ from pyspark.sql import SparkSession
 from delta.tables import DeltaTable
 import json
 from pyspark.sql.functions import col
+import os
 
 # Initialize AWS clients
 s3_client = boto3.client("s3", region_name="us-east-1")

@@ -2,6 +2,7 @@ import boto3
 from datetime import datetime
 from pyspark.sql import SparkSession
 import json
+import os
 
 # Initialize AWS clients
 s3_client = boto3.client("s3", region_name="us-east-1")
