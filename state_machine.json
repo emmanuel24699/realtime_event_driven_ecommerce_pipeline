@@ -11,7 +11,7 @@
         "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-validation-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": ["subnet-06ea69061a23f5360", "subnet-012d1aa4f3bd10af8"],
+            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
             "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
             "AssignPublicIp": "DISABLED"
           }
@@ -23,7 +23,7 @@
               "Environment": [
                 {
                   "Name": "EVENT_DATA",
-                  "Value": "$"
+                  "Value.$": "States.JsonToString($)"
                 }
               ]
             }
@@ -52,10 +52,65 @@
         {
           "Variable": "$.Output",
           "BooleanEquals": true,
-          "Next": "TransformTask"
+          "Next": "StageTask"
         }
       ],
       "Default": "NotifyFailure"
+    },
+    "StageTask": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-staging-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
+            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "staging-container",
+              "Environment": [
+                {
+                  "Name": "EVENT_DATA",
+                  "Value.$": "States.JsonToString($)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "IsOrderItemsChoice"
+    },
+    "IsOrderItemsChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Records[0].s3.object.key",
+          "StringMatches": "input/*order_items*",
+          "Next": "TransformTask"
+        }
+      ],
+      "Default": "Success"
     },
     "TransformTask": {
       "Type": "Task",
@@ -78,7 +133,51 @@
               "Environment": [
                 {
                   "Name": "EVENT_DATA",
-                  "Value": "$"
+                  "Value.$": "States.JsonToString($)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "DynamoDBTask"
+    },
+    "DynamoDBTask": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-dynamodb-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
+            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "dynamodb-container",
+              "Environment": [
+                {
+                  "Name": "EVENT_DATA",
+                  "Value.$": "States.JsonToString($)"
                 }
               ]
             }
@@ -117,8 +216,8 @@
       "Parameters": {
         "QueueUrl": "https://sqs.us-east-1.amazonaws.com/985539772768/lab6-pipeline-dlq",
         "MessageBody": {
-          "FileKey": "$.Records[0].s3.object.key",
-          "Error": "$.Error"
+          "FileKey.$": "$.Records[0].s3.object.key",
+          "Error.$": "$.Error"
         }
       },
       "End": true
