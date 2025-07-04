@@ -13,6 +13,7 @@ s3_client = boto3.client("s3", region_name="us-east-1")
 dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 
+
 spark = (
     SparkSession.builder.appName("EcommerceKPITransformation")
     .config("spark.driver.host", "localhost")
@@ -23,7 +24,7 @@ spark = (
     )
     .config(
         "spark.jars.packages",
-        "io.delta:delta-core_2.12:2.4.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+        "io.delta:delta-core_2.12:2.3.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
     )
     .getOrCreate()
 )
