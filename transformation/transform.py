@@ -11,7 +11,6 @@ import logging
 import sys
 
 # --- 1. Configure Logging ---
-# Set up a logger to output messages to the console (and CloudWatch Logs)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -24,8 +23,6 @@ try:
     dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
     BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 
-    # --- 3. Initialize Spark Session with Correct Packages ---
-    # This configuration is stable and includes necessary packages for Delta and S3
     spark = (
         SparkSession.builder.appName("EcommerceKPITransformation")
         .config("spark.driver.host", "localhost")
@@ -36,11 +33,10 @@ try:
         )
         .config(
             "spark.jars.packages",
-            "io.delta:delta-core_2.12:2.3.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+            "io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
         )
         .getOrCreate()
     )
-    # Set log level for Spark's own chatter to be less verbose
     spark.sparkContext.setLogLevel("WARN")
 
 except Exception as e:
@@ -72,7 +68,6 @@ def transform_file(file_key):
         spark_df = spark.createDataFrame(pandas_df)
         logging.info(f"Successfully created DataFrame with {spark_df.count()} rows.")
 
-        # Add an order_date column for partitioning if 'created_at' exists
         if "created_at" in spark_df.columns:
             spark_df = spark_df.withColumn("order_date", col("created_at").cast("date"))
 
@@ -118,7 +113,6 @@ def transform_file(file_key):
             f"An error occurred during transformation of {file_key}. Error: {e}",
             exc_info=True,
         )
-        # Optionally, add a failure log to S3 here
         raise
 
 
@@ -128,7 +122,6 @@ def calculate_and_write_kpis(order_items_df):
     """
     try:
         logging.info("Calculating KPIs for order_items...")
-        # Load dimension tables
         orders_df = spark.read.format("delta").load(
             f"s3a://{BUCKET_NAME}/staging/fact/orders"
         )
@@ -142,7 +135,6 @@ def calculate_and_write_kpis(order_items_df):
             )
             return
 
-        # Join tables
         joined_df = (
             order_items_df.alias("oi")
             .join(
@@ -169,7 +161,6 @@ def calculate_and_write_kpis(order_items_df):
 
         logging.info(f"Join successful. Processing {joined_count} rows for KPIs.")
 
-        # Category-Level KPIs
         revenue_per_order = joined_df.groupBy("order_date", "category", "order_id").agg(
             _sum("sale_price").alias("order_revenue")
         )
@@ -178,7 +169,6 @@ def calculate_and_write_kpis(order_items_df):
             avg("order_revenue").alias("avg_order_value"),
         )
 
-        # Order-Level KPIs
         order_kpis = joined_df.groupBy("order_date").agg(
             countDistinct("order_id").alias("total_orders"),
             _sum("sale_price").alias("total_revenue"),
@@ -190,7 +180,6 @@ def calculate_and_write_kpis(order_items_df):
             countDistinct("user_id").alias("unique_customers"),
         )
 
-        # Write to DynamoDB
         write_to_dynamodb(category_kpis, "CategoryKPIs", ["category", "order_date"])
         write_to_dynamodb(order_kpis, "OrderKPIs", ["order_date"])
 
@@ -275,7 +264,6 @@ if __name__ == "__main__":
     except json.JSONDecodeError:
         logging.error(f"Error decoding EVENT_DATA environment variable: {event_str}")
     except Exception as e:
-        # This final catch-all ensures any unhandled exception gets logged
         logging.critical(
             f"A critical unexpected error occurred in the main execution block. Error: {e}",
             exc_info=True,
