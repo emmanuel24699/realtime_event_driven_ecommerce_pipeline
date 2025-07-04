@@ -7,27 +7,47 @@ import json
 import os
 from pyspark.sql.functions import col, sum as _sum, count, avg, countDistinct, when
 from decimal import Decimal
+import logging
+import sys
 
-# Initialize AWS clients
-s3_client = boto3.client("s3", region_name="us-east-1")
-dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
-BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
-
-
-spark = (
-    SparkSession.builder.appName("EcommerceKPITransformation")
-    .config("spark.driver.host", "localhost")
-    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-    .config(
-        "spark.sql.catalog.spark_catalog",
-        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-    )
-    .config(
-        "spark.jars.packages",
-        "io.delta:delta-core_2.12:2.3.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
-    )
-    .getOrCreate()
+# --- 1. Configure Logging ---
+# Set up a logger to output messages to the console (and CloudWatch Logs)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
 )
+
+# --- 2. Initialize Clients and Constants ---
+try:
+    s3_client = boto3.client("s3", region_name="us-east-1")
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
+
+    # --- 3. Initialize Spark Session with Correct Packages ---
+    # This configuration is stable and includes necessary packages for Delta and S3
+    spark = (
+        SparkSession.builder.appName("EcommerceKPITransformation")
+        .config("spark.driver.host", "localhost")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
+        .config(
+            "spark.jars.packages",
+            "io.delta:delta-core_2.12:2.3.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+        )
+        .getOrCreate()
+    )
+    # Set log level for Spark's own chatter to be less verbose
+    spark.sparkContext.setLogLevel("WARN")
+
+except Exception as e:
+    logging.critical(
+        f"Failed to initialize Spark or AWS clients. Shutting down. Error: {e}"
+    )
+    sys.exit(1)
 
 
 def transform_file(file_key):
@@ -35,54 +55,79 @@ def transform_file(file_key):
     Transforms a single raw data file from S3, updates a Delta Lake fact table,
     and computes KPIs for DynamoDB.
     """
-    # Determine file type from the file key
     file_name = file_key.split("/")[-1]
-    if "order_items" in file_name:
-        file_type = "order_items"
-    elif "products" in file_name:
-        file_type = "products"
-    else:
-        file_type = file_name.split("_")[0]
-
-    # Download file from S3
     local_file = f"/tmp/{file_name}"
-    s3_client.download_file(BUCKET_NAME, file_key, local_file)
 
-    # Read CSV and convert to Spark DataFrame
-    pandas_df = pd.read_csv(local_file)
-    spark_df = spark.createDataFrame(pandas_df)
+    try:
+        # --- 4. Download and Read Data ---
+        logging.info(f"Downloading {file_key} from S3 to {local_file}...")
+        s3_client.download_file(BUCKET_NAME, file_key, local_file)
 
-    # Add an order_date column for partitioning
-    if "created_at" in spark_df.columns:
-        spark_df = spark_df.withColumn("order_date", col("created_at").cast("date"))
+        logging.info("Reading CSV and creating Spark DataFrame...")
+        pandas_df = pd.read_csv(local_file)
+        if pandas_df.empty:
+            logging.warning(f"Source file {file_name} is empty. No data to process.")
+            return
 
-    # Define the key for the merge operation
-    if file_type == "products":
-        key = "id"
-    elif file_type == "orders":
-        key = "order_id"
-    else:  # order_items
-        key = "id"
+        spark_df = spark.createDataFrame(pandas_df)
+        logging.info(f"Successfully created DataFrame with {spark_df.count()} rows.")
 
-    # The s3a:// protocol requires the hadoop-aws package configured above
-    delta_path = f"s3a://{BUCKET_NAME}/staging/fact/{file_type}"
+        # Add an order_date column for partitioning if 'created_at' exists
+        if "created_at" in spark_df.columns:
+            spark_df = spark_df.withColumn("order_date", col("created_at").cast("date"))
 
-    # Write to Delta Lake using a merge operation for idempotency
-    if not DeltaTable.isDeltaTable(spark, delta_path):
-        # If the table doesn't exist, create it
-        partition_columns = ["order_date"] if "order_date" in spark_df.columns else []
-        writer = spark_df.write.format("delta").mode("overwrite")
-        if partition_columns:
-            writer = writer.partitionBy(*partition_columns)
-        writer.save(delta_path)
-    else:
-        delta_table = DeltaTable.forPath(spark, delta_path)
-        delta_table.alias("target").merge(
-            spark_df.alias("source"), f"target.{key} = source.{key}"
-        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+        # --- 5. Write to Delta Lake (Fact Table) ---
+        if "products" in file_name:
+            file_type, key = "products", "id"
+        elif "orders" in file_name:
+            file_type, key = "orders", "order_id"
+        elif "order_items" in file_name:
+            file_type, key = "order_items", "id"
+        else:
+            logging.error(f"Unknown file type for {file_name}. Skipping.")
+            return
 
-    # Compute KPIs only when processing order_items
-    if file_type == "order_items":
+        delta_path = f"s3a://{BUCKET_NAME}/staging/fact/{file_type}"
+        logging.info(f"Preparing to write to Delta table: {delta_path}")
+
+        if not DeltaTable.isDeltaTable(spark, delta_path):
+            logging.info(
+                f"Delta table does not exist. Creating and writing {spark_df.count()} rows."
+            )
+            writer = spark_df.write.format("delta").mode("overwrite")
+            if "order_date" in spark_df.columns:
+                writer = writer.partitionBy("order_date")
+            writer.save(delta_path)
+        else:
+            logging.info(f"Delta table exists. Merging {spark_df.count()} rows...")
+            delta_table = DeltaTable.forPath(spark, delta_path)
+            delta_table.alias("target").merge(
+                spark_df.alias("source"), f"target.{key} = source.{key}"
+            ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+
+        logging.info(f"Successfully wrote data to {delta_path}.")
+
+        # --- 6. Calculate and Write KPIs (Only for order_items) ---
+        if file_type == "order_items":
+            calculate_and_write_kpis(spark_df)
+
+        log_success(file_key, "Transformation successful")
+
+    except Exception as e:
+        logging.error(
+            f"An error occurred during transformation of {file_key}. Error: {e}",
+            exc_info=True,
+        )
+        # Optionally, add a failure log to S3 here
+        raise
+
+
+def calculate_and_write_kpis(order_items_df):
+    """
+    Loads dimension tables, joins data, and calculates KPIs.
+    """
+    try:
+        logging.info("Calculating KPIs for order_items...")
         # Load dimension tables
         orders_df = spark.read.format("delta").load(
             f"s3a://{BUCKET_NAME}/staging/fact/orders"
@@ -91,9 +136,15 @@ def transform_file(file_key):
             f"s3a://{BUCKET_NAME}/staging/fact/products"
         )
 
+        if orders_df.rdd.isEmpty() or products_df.rdd.isEmpty():
+            logging.warning(
+                "Cannot calculate KPIs because 'orders' or 'products' Delta table is empty. Please process them first."
+            )
+            return
+
         # Join tables
         joined_df = (
-            spark_df.alias("oi")
+            order_items_df.alias("oi")
             .join(
                 orders_df.alias("o"), col("oi.order_id") == col("o.order_id"), "inner"
             )
@@ -109,12 +160,19 @@ def transform_file(file_key):
             )
         )
 
-        # Pre-calculate revenue per order for AOV calculation
+        joined_count = joined_df.count()
+        if joined_count == 0:
+            logging.warning(
+                "Join operation resulted in 0 rows. No KPIs will be generated. Check for matching keys."
+            )
+            return
+
+        logging.info(f"Join successful. Processing {joined_count} rows for KPIs.")
+
+        # Category-Level KPIs
         revenue_per_order = joined_df.groupBy("order_date", "category", "order_id").agg(
             _sum("sale_price").alias("order_revenue")
         )
-
-        # Category-Level KPIs
         category_kpis = revenue_per_order.groupBy("order_date", "category").agg(
             _sum("order_revenue").alias("daily_revenue"),
             avg("order_revenue").alias("avg_order_value"),
@@ -136,76 +194,91 @@ def transform_file(file_key):
         write_to_dynamodb(category_kpis, "CategoryKPIs", ["category", "order_date"])
         write_to_dynamodb(order_kpis, "OrderKPIs", ["order_date"])
 
-    log_success(file_key, "Transformation successful")
+    except Exception as e:
+        logging.error(f"Failed to calculate or write KPIs. Error: {e}", exc_info=True)
+        raise
 
 
 def write_to_dynamodb(df, table_name, key_columns):
-    """
-    Writes a Spark DataFrame to a DynamoDB table using a robust upsert.
-    Handles data type conversion for DynamoDB compatibility.
-    """
-    table = dynamodb.Table(table_name)
-    for row in df.collect():
-        item = row.asDict(recursive=True)
+    """Writes a Spark DataFrame to a DynamoDB table using a robust upsert."""
+    try:
+        logging.info(f"Writing {df.count()} records to DynamoDB table: {table_name}")
+        table = dynamodb.Table(table_name)
+        for row in df.collect():
+            item = row.asDict(recursive=True)
+            final_item = {
+                k: (
+                    Decimal(str(v))
+                    if isinstance(v, float)
+                    else v.strftime("%Y-%m-%d") if isinstance(v, datetime) else v
+                )
+                for k, v in item.items()
+                if v is not None
+            }
+            key = {k: final_item[k] for k in key_columns}
 
-        # Clean and convert data types for DynamoDB
-        final_item = {}
-        for k, v in item.items():
-            if v is not None:
-                if isinstance(v, float):
-                    final_item[k] = Decimal(str(v))
-                elif isinstance(v, datetime):
-                    final_item[k] = v.strftime("%Y-%m-%d")
-                else:
-                    final_item[k] = v
+            update_expression_parts = []
+            expression_attribute_values = {}
+            expression_attribute_names = {}
+            for k, v in final_item.items():
+                if k not in key_columns:
+                    update_expression_parts.append(f"#{k} = :{k}")
+                    expression_attribute_values[f":{k}"] = v
+                    expression_attribute_names[f"#{k}"] = k
 
-        key = {k: final_item[k] for k in key_columns}
-
-        # Build the update expression dynamically for an upsert operation
-        update_expression_parts = []
-        expression_attribute_values = {}
-        expression_attribute_names = {}
-
-        for k, v in final_item.items():
-            if k not in key_columns:
-                update_expression_parts.append(f"#{k} = :{k}")
-                expression_attribute_values[f":{k}"] = v
-                expression_attribute_names[f"#{k}"] = k
-
-        if update_expression_parts:
-            update_expression = "SET " + ", ".join(update_expression_parts)
-            table.update_item(
-                Key=key,
-                UpdateExpression=update_expression,
-                ExpressionAttributeValues=expression_attribute_values,
-                ExpressionAttributeNames=expression_attribute_names,
-            )
+            if update_expression_parts:
+                update_expression = "SET " + ", ".join(update_expression_parts)
+                table.update_item(
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeValues=expression_attribute_values,
+                    ExpressionAttributeNames=expression_attribute_names,
+                )
+        logging.info(f"Successfully wrote records to {table_name}.")
+    except Exception as e:
+        logging.error(
+            f"Failed to write to DynamoDB table {table_name}. Error: {e}", exc_info=True
+        )
+        raise
 
 
 def log_success(file_key, message):
-    """Logs a success message to S3."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = file_key.split("/")[-1]
-    log_key = f"logs/transform/{file_name}_{timestamp}_success.log"
-    s3_client.put_object(Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8"))
+    """Logs a success message to S3 for audit purposes."""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = file_key.split("/")[-1]
+        log_key = f"logs/transform/{file_name}_{timestamp}_success.log"
+        s3_client.put_object(
+            Bucket=BUCKET_NAME, Key=log_key, Body=message.encode("utf-8")
+        )
+    except Exception as e:
+        logging.warning(f"Could not write success log to S3. Error: {e}")
 
 
 if __name__ == "__main__":
+    logging.info("--- Starting Transformation Script ---")
     event_str = os.environ.get("EVENT_DATA", "{}")
+
     try:
         event = json.loads(event_str)
-
         file_key = event.get("detail", {}).get("object", {}).get("key", "")
 
         if file_key and file_key.startswith("input/"):
-            print(f"Processing file: {file_key}")
             transform_file(file_key)
         elif not file_key:
-            print("File key not found in the event.")
+            logging.error("File key not found in the event data.")
         else:
-            print(f"File key '{file_key}' does not match expected input path.")
+            logging.warning(
+                f"File key '{file_key}' is not in the 'input/' directory. Skipping."
+            )
 
     except json.JSONDecodeError:
-        print(f"Error decoding EVENT_DATA: {event_str}")
+        logging.error(f"Error decoding EVENT_DATA environment variable: {event_str}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        # This final catch-all ensures any unhandled exception gets logged
+        logging.critical(
+            f"A critical unexpected error occurred in the main execution block. Error: {e}",
+            exc_info=True,
+        )
+
+    logging.info("--- Transformation Script Finished ---")
