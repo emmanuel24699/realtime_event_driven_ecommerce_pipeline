@@ -1,13 +1,14 @@
 FROM python:3.9-slim
 
-# Install Java 11 (compatible with Spark 3.x) and dependencies
+# Install Java (OpenJDK 17) and dependencies
 RUN apt-get update && apt-get install -y \
-    openjdk-11-jdk-headless \
+    openjdk-17-jdk-headless \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Set JAVA_HOME
-ENV JAVA_HOME="/usr/lib/jvm/java-11-openjdk-amd64"
+# Set JAVA_HOME for Java 17
+ENV JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+ENV PATH="$JAVA_HOME/bin:$PATH"
 
 # Fix hostname resolution (for Spark to not fail)
 RUN echo "127.0.0.1 $(hostname)" >> /etc/hosts
