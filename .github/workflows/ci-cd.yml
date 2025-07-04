@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -21,7 +21,12 @@ jobs:
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create or verify ECR repository for validation
+        run: |
+          aws ecr describe-repositories --repository-names lab6-ecommerce-validation --region us-east-1 2>/dev/null || \
+          aws ecr create-repository --repository-name lab6-ecommerce-validation --region us-east-1
 
       - name: Build and push validation image
         env:
@@ -33,6 +38,11 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
+      - name: Create or verify ECR repository for staging
+        run: |
+          aws ecr describe-repositories --repository-names lab6-ecommerce-staging --region us-east-1 2>/dev/null || \
+          aws ecr create-repository --repository-name lab6-ecommerce-staging --region us-east-1
+
       - name: Build and push staging image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -43,6 +53,11 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
+      - name: Create or verify ECR repository for transformation
+        run: |
+          aws ecr describe-repositories --repository-names lab6-ecommerce-transformation --region us-east-1 2>/dev/null || \
+          aws ecr create-repository --repository-name lab6-ecommerce-transformation --region us-east-1
+
       - name: Build and push transformation image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -52,6 +67,11 @@ jobs:
           cd kpi_computation
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Create or verify ECR repository for dynamodb
+        run: |
+          aws ecr describe-repositories --repository-names lab6-ecommerce-dynamodb --region us-east-1 2>/dev/null || \
+          aws ecr create-repository --repository-name lab6-ecommerce-dynamodb --region us-east-1
 
       - name: Build and push dynamodb image
         env:
