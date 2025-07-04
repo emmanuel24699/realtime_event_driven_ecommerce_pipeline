@@ -19,5 +19,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy your application code
 COPY transform.py .
 
-# Define the default command
-CMD ["python", "transform.py"]
+# Set the hostname to localhost before running the script
+ENTRYPOINT ["sh", "-c", "hostname localhost && exec python /app/transform.py"]
