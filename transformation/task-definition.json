@@ -6,6 +6,7 @@
       "name": "transformation-container",
       "image": "985539772768.dkr.ecr.us-east-1.amazonaws.com/lab6-ecommerce-transformation:latest",
       "essential": true,
+      "hostname": "localhost",
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
