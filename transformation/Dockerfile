@@ -12,6 +12,9 @@ ENV JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
 # Set the working directory
 WORKDIR /app
 
+# Add the container's hostname to /etc/hosts to prevent UnknownHostException
+RUN echo "127.0.0.1 $(hostname)" >> /etc/hosts
+
 # Copy and install Python requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
