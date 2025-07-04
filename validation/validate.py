@@ -47,7 +47,7 @@ def validate_file(file_key):
     except Exception as e:
         log_error(file_key, f"Failed to read CSV: {str(e)}")
         move_to_rejected(file_key)
-        raise e
+        return {"Output": False}
 
     # Check required columns
     missing_columns = [
@@ -57,11 +57,11 @@ def validate_file(file_key):
         error_message = f"Missing columns: {missing_columns}"
         log_error(file_key, error_message)
         move_to_rejected(file_key)
-        raise ValueError(error_message)
+        return {"Output": False}
 
-    # Log success and return True
+    # Log success and return JSON output
     log_success(file_key, "Validation successful")
-    return True
+    return {"Output": True}
 
 
 def log_error(file_key, message):
@@ -100,4 +100,5 @@ if __name__ == "__main__":
     file_key = event.get("detail", {}).get("object", {}).get("key", "")
 
     if file_key.startswith("input/"):
-        validate_file(file_key)
+        result = validate_file(file_key)
+        print(json.dumps(result))
