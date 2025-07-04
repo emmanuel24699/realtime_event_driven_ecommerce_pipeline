@@ -7,8 +7,8 @@ import json
 from pyspark.sql.functions import col, sum as sum_, count, avg, countDistinct
 
 # Initialize AWS clients
-s3_client = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
+s3_client = boto3.client("s3", region_name="us-east-1")
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 
 # Initialize Spark
