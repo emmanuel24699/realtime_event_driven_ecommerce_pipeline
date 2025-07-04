@@ -23,6 +23,13 @@ try:
     dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
     BUCKET_NAME = "lab6-realtime-ecommerce-pipelines"
 
+    # Define the path to PySpark's JARs within the container
+    # This path is standard for pip-installed PySpark
+    spark_jars_path = "/usr/local/lib/python3.9/site-packages/pyspark/jars/*"
+
+    # --- 3. Initialize Spark Session with Correct Packages AND Classpath ---
+    # FIXED: Added extraClassPath to ensure Spark finds its core Scala libraries.
+    # This resolves the 'scala.Serializable' NoClassDefFoundError.
     spark = (
         SparkSession.builder.appName("EcommerceKPITransformation")
         .config("spark.driver.host", "localhost")
@@ -35,6 +42,8 @@ try:
             "spark.jars.packages",
             "io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
         )
+        .config("spark.driver.extraClassPath", spark_jars_path)
+        .config("spark.executor.extraClassPath", spark_jars_path)
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
