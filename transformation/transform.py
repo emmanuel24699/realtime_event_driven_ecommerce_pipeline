@@ -190,15 +190,20 @@ if __name__ == "__main__":
     event_str = os.environ.get("EVENT_DATA", "{}")
     try:
         event = json.loads(event_str)
-        if "Records" in event and event["Records"]:
-            file_key = (
-                event["Records"][0].get("s3", {}).get("object", {}).get("key", "")
-            )
-            if file_key and file_key.startswith("input/"):
-                transform_file(file_key)
-            elif not file_key:
-                print("File key not found in the event.")
+
+        # FIXED: Correctly parse the file key from the EventBridge event structure.
+        # The key is inside event['detail']['object']['key'], not event['Records'].
+        file_key = event.get("detail", {}).get("object", {}).get("key", "")
+
+        if file_key and file_key.startswith("input/"):
+            print(f"Processing file: {file_key}")
+            transform_file(file_key)
+        elif not file_key:
+            print("File key not found in the event.")
         else:
-            print("No records found in the event, or event is empty.")
+            print(f"File key '{file_key}' does not match expected input path.")
+
     except json.JSONDecodeError:
         print(f"Error decoding EVENT_DATA: {event_str}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
