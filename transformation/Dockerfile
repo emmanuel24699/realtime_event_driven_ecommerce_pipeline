@@ -12,7 +12,7 @@ ENV JAVA_HOME="/usr/lib/jvm/java-11-openjdk-amd64"
 # Set the working directory
 WORKDIR /app
 
-# Copy and install Python requirements
+# Copy and install Python requirement
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
