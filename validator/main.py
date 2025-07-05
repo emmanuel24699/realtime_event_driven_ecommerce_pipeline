@@ -1,9 +1,15 @@
+import logging
 import os
 import sys
 import pandas as pd
 import boto3
+from botocore.exceptions import ClientError
 
-# Define required columns for each file type
+# Configure structured logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 REQUIRED_COLUMNS = {
     "products": [
         "id",
@@ -28,10 +34,8 @@ REQUIRED_COLUMNS = {
 
 
 def validate_file(bucket_name, file_key):
-    """Validates the structure of a given file in S3."""
-    print(f"Starting validation for s3://{bucket_name}/{file_key}...")
+    logging.info(f"Starting validation for s3://{bucket_name}/{file_key}...")
 
-    # Determine file type from its name
     file_name = os.path.basename(file_key)
     file_type = None
     if "products" in file_name:
@@ -42,31 +46,39 @@ def validate_file(bucket_name, file_key):
         file_type = "orders"
 
     if not file_type:
-        print(f"Error: Could not determine file type for '{file_name}'.")
-        sys.exit(1)  # Exit with failure
+        logging.error(f"Could not determine file type for '{file_name}'. Skipping.")
+        sys.exit(1)
 
-    print(f"Determined file type: {file_type}")
+    logging.info(f"Determined file type: {file_type}")
 
     try:
-        # Read CSV from S3
         s3_client = boto3.client("s3")
         response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
         df = pd.read_csv(response.get("Body"))
 
-        # Validate columns
         actual_columns = {col.strip() for col in df.columns}
         expected_columns = set(REQUIRED_COLUMNS[file_type])
 
         if not expected_columns.issubset(actual_columns):
             missing = expected_columns - actual_columns
-            print(f"Error: File is missing required columns: {list(missing)}")
-            sys.exit(1)  # Exit with failure
+            logging.error(f"File is missing required columns: {list(missing)}")
+            sys.exit(1)
 
-        print(f"Validation successful for s3://{bucket_name}/{file_key}.")
-        sys.exit(0)  # Exit with success
+        logging.info(
+            f"Validation successful for s3://{bucket_name}/{file_key}. All required columns are present."
+        )
+        sys.exit(0)
 
+    except ClientError as e:
+        logging.error(f"AWS Boto3 client error during validation: {e}")
+        sys.exit(1)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError) as e:
+        logging.error(f"Pandas parsing error for file {file_key}: {e}")
+        sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred during validation: {e}")
+        logging.error(
+            f"An unexpected error occurred during validation: {e}", exc_info=True
+        )
         sys.exit(1)
 
 
@@ -75,7 +87,7 @@ if __name__ == "__main__":
     s3_key = os.environ.get("S3_KEY")
 
     if not s3_bucket or not s3_key:
-        print("Error: S3_BUCKET and S3_KEY environment variables are required.")
+        logging.error("S3_BUCKET and S3_KEY environment variables are required.")
         sys.exit(1)
 
     validate_file(s3_bucket, s3_key)

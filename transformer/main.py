@@ -1,16 +1,20 @@
+import logging
 import os
 import sys
 import boto3
 from decimal import Decimal
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.errors import PySparkException
+from botocore.exceptions import ClientError
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 def transform_and_load(bucket_name):
-    """
-    Reads from Delta tables using Spark, computes KPIs, and loads to DynamoDB.
-    """
-    print("Initializing Spark session...")
+    logging.info("Initializing Spark session...")
 
     spark = (
         SparkSession.builder.appName("Ecommerce-ETL-Transformer")
@@ -22,19 +26,22 @@ def transform_and_load(bucket_name):
         .getOrCreate()
     )
 
-    print("Spark session initialized. Starting transformation and load process...")
+    logging.info(
+        "Spark session initialized. Starting transformation and load process..."
+    )
 
     try:
         # --- Read Data from Delta Lake ---
+        # Spark will automatically use the partitions in the Delta tables for faster reads (partition pruning).
         base_path = f"s3a://{bucket_name}/staging"
         products_df = spark.read.format("delta").load(f"{base_path}/products")
         orders_df = spark.read.format("delta").load(f"{base_path}/orders")
         order_items_df = spark.read.format("delta").load(f"{base_path}/order_items")
-        print("Successfully loaded data from all Delta tables into Spark.")
+        logging.info(
+            "Successfully loaded data from all partitioned Delta tables into Spark."
+        )
 
         # --- Data Transformation & KPI Calculation ---
-
-        # 1. Prepare dataframes by renaming ALL ambiguous columns before joining
         orders_renamed_df = (
             orders_df.withColumn("order_date", F.to_date(F.col("created_at")))
             .withColumnRenamed("user_id", "order_user_id")
@@ -46,27 +53,22 @@ def transform_and_load(bucket_name):
             "id", "order_item_id"
         ).withColumnRenamed("status", "item_status")
 
-        # 2. Join the dataframes. Using a list for the join key `["order_id"]`
-        # automatically handles the duplicate key column.
         df_items_products = order_items_renamed_df.join(
             products_df, order_items_renamed_df.product_id == products_df.id, "inner"
         )
         df = df_items_products.join(orders_renamed_df, ["order_id"], "inner")
 
-        # 3. Calculate Order-Level KPIs using the new, unambiguous column names
         daily_kpis = df.groupBy("order_date").agg(
             F.sum("sale_price").alias("total_revenue"),
             F.count("order_item_id").alias("total_items_sold"),
             F.countDistinct("order_id").alias("total_orders"),
             F.countDistinct("user_id").alias("unique_customers"),
         )
-
         returned_orders = (
             orders_renamed_df.filter(F.col("order_status") == "returned")
             .groupBy("order_date")
             .agg(F.countDistinct("order_id").alias("returned_orders"))
         )
-
         daily_kpis_df = (
             daily_kpis.join(returned_orders, "order_date", "left_outer")
             .fillna(0)
@@ -74,14 +76,12 @@ def transform_and_load(bucket_name):
                 "return_rate", (F.col("returned_orders") / F.col("total_orders")) * 100
             )
         )
-        print("Calculated Order-Level KPIs with Spark.")
+        logging.info("Calculated Order-Level KPIs with Spark.")
 
-        # 4. Calculate Category-Level KPIs
         category_kpis = df.groupBy("order_date", "category").agg(
             F.sum("sale_price").alias("daily_revenue"),
             F.countDistinct("order_id").alias("total_category_orders"),
         )
-
         returned_items = (
             df.filter(F.col("item_status") == "returned")
             .groupBy("order_date", "category")
@@ -90,7 +90,6 @@ def transform_and_load(bucket_name):
         total_items = df.groupBy("order_date", "category").agg(
             F.count("order_item_id").alias("total_items")
         )
-
         category_kpis_df = (
             category_kpis.join(returned_items, ["order_date", "category"], "left_outer")
             .join(total_items, ["order_date", "category"], "left_outer")
@@ -104,7 +103,7 @@ def transform_and_load(bucket_name):
                 (F.col("returned_items") / F.col("total_items")) * 100,
             )
         )
-        print("Calculated Category-Level KPIs with Spark.")
+        logging.info("Calculated Category-Level KPIs with Spark.")
 
         # --- Load to DynamoDB ---
         dynamodb = boto3.resource("dynamodb")
@@ -122,7 +121,7 @@ def transform_and_load(bucket_name):
                         "return_rate": Decimal(str(round(row["return_rate"], 2))),
                     }
                 )
-        print("Loaded Order-Level KPIs to DynamoDB.")
+        logging.info("Loaded Order-Level KPIs to DynamoDB.")
 
         category_table = dynamodb.Table("CategoryKPIs")
         with category_table.batch_writer(
@@ -142,21 +141,32 @@ def transform_and_load(bucket_name):
                         ),
                     }
                 )
-        print("Loaded Category-Level KPIs to DynamoDB.")
+        logging.info("Loaded Category-Level KPIs to DynamoDB.")
 
-        spark.stop()
-        print("Transformation and load process completed successfully.")
-        sys.exit(0)
-
-    except Exception as e:
-        print(f"An unexpected error occurred during Spark transformation: {e}")
-        spark.stop()
+    except PySparkException as e:
+        logging.error(
+            f"A Spark error occurred during transformation: {e}", exc_info=True
+        )
         sys.exit(1)
+    except ClientError as e:
+        logging.error(
+            f"A Boto3 error occurred during DynamoDB load: {e}", exc_info=True
+        )
+        sys.exit(1)
+    except Exception as e:
+        logging.error(
+            f"An unexpected error occurred during Spark transformation: {e}",
+            exc_info=True,
+        )
+        sys.exit(1)
+    finally:
+        logging.info("Stopping Spark session.")
+        spark.stop()
 
 
 if __name__ == "__main__":
     s3_bucket = os.environ.get("S3_BUCKET")
     if not s3_bucket:
-        print("Error: S3_BUCKET environment variable is required.")
+        logging.error("S3_BUCKET environment variable is required.")
         sys.exit(1)
     transform_and_load(s3_bucket)
