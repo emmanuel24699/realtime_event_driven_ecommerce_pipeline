@@ -2,3 +2,5 @@ pandas
 boto3
 deltalake
 s3fs
+pyarrow
+fastparquet
