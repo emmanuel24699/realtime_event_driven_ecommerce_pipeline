@@ -1,105 +1,108 @@
 import logging
 import os
 import sys
+import json
 import pandas as pd
 import boto3
 from deltalake import DeltaTable
 from deltalake.writer import write_deltalake
 from deltalake.exceptions import TableNotFoundError
-from botocore.exceptions import ClientError
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
-def stage_data(bucket_name, file_key):
-    logging.info(f"Starting staging/merge for s3://{bucket_name}/{file_key}...")
-
-    file_name = os.path.basename(file_key)
-    table_name = None
-    merge_key = None
-    partition_cols = None
-
-    if "products" in file_name:
-        table_name = "products"
-        merge_key = "id"
-        partition_cols = ["department"]
-    elif "order_items" in file_name:
-        table_name = "order_items"
-        merge_key = "id"
-        partition_cols = ["year", "month"]
-    elif "orders" in file_name:
-        table_name = "orders"
-        merge_key = "order_id"
-        partition_cols = ["year", "month"]
-
-    if not table_name:
-        logging.error(f"Could not determine table name for '{file_name}'.")
-        sys.exit(1)
-
-    staging_path = f"s3://{bucket_name}/staging/{table_name}"
+def stage_batch(valid_files):
+    """
+    Processes a batch of valid files, merging each into its respective Delta table.
+    """
+    logging.info(f"Starting to stage a batch of {len(valid_files)} files.")
+    s3_client = boto3.client("s3")
     storage_options = {"AWS_REGION": os.environ.get("AWS_REGION", "us-east-1")}
 
-    logging.info(
-        f"Staging to table: {table_name}, Merge key: {merge_key}, Partitions: {partition_cols}"
-    )
+    for file_info in valid_files:
+        bucket = file_info["bucket"]
+        key = file_info["key"]
+        file_name = os.path.basename(key)
 
-    try:
-        s3_client = boto3.client("s3")
-        response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
-        source_df = pd.read_csv(response.get("Body"))
-
-        # --- Add partition columns ---
-        if "created_at" in source_df.columns:
-            dt_col = pd.to_datetime(source_df["created_at"])
-            source_df["year"] = dt_col.dt.year
-            source_df["month"] = dt_col.dt.month
-
-        delta_table = DeltaTable(staging_path, storage_options=storage_options)
-
-        logging.info(f"Target table found. Merging data into {staging_path}...")
-        (
-            delta_table.merge(
-                source=source_df,
-                predicate=f"target.{merge_key} = source.{merge_key}",
-                source_alias="source",
-                target_alias="target",
+        table_name, merge_key, partition_cols = None, None, None
+        if "products" in file_name:
+            table_name, merge_key, partition_cols = "products", "id", ["department"]
+        elif "order_items" in file_name:
+            table_name, merge_key, partition_cols = (
+                "order_items",
+                "id",
+                ["year", "month"],
             )
-            .when_matched_update_all()
-            .when_not_matched_insert_all()
-            .execute()
-        )
-        logging.info(f"Successfully merged data into {staging_path}.")
+        elif "orders" in file_name:
+            table_name, merge_key, partition_cols = (
+                "orders",
+                "order_id",
+                ["year", "month"],
+            )
 
-    except TableNotFoundError:
-        logging.warning(
-            f"Table {staging_path} not found. Performing initial partitioned write."
-        )
-        write_deltalake(
-            staging_path,
-            source_df,
-            mode="overwrite",
-            partition_by=partition_cols,
-            storage_options=storage_options,
-        )
-        logging.info(f"Successfully created and wrote initial data to {staging_path}.")
+        if not table_name:
+            logging.warning(f"Could not determine table for {key}. Skipping.")
+            continue
 
-    except (ClientError, Exception) as e:
-        logging.error(
-            f"An unexpected error occurred during staging merge: {e}", exc_info=True
-        )
-        sys.exit(1)
+        staging_path = f"s3://{bucket}/staging/{table_name}"
+        logging.info(f"Processing {key} into {staging_path}...")
 
+        try:
+            response = s3_client.get_object(Bucket=bucket, Key=key)
+            source_df = pd.read_csv(response.get("Body"))
+
+            if "created_at" in source_df.columns:
+                dt_col = pd.to_datetime(source_df["created_at"])
+                source_df["year"] = dt_col.dt.year
+                source_df["month"] = dt_col.dt.month
+
+            try:
+                delta_table = DeltaTable(staging_path, storage_options=storage_options)
+                (
+                    delta_table.merge(
+                        source=source_df,
+                        predicate=f"target.{merge_key} = source.{merge_key}",
+                        source_alias="source",
+                        target_alias="target",
+                    )
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute()
+                )
+                logging.info(f"Successfully merged {key}.")
+            except TableNotFoundError:
+                logging.warning(
+                    f"Table {staging_path} not found. Performing initial write for {key}."
+                )
+                write_deltalake(
+                    staging_path,
+                    source_df,
+                    mode="overwrite",
+                    partition_by=partition_cols,
+                    storage_options=storage_options,
+                )
+                logging.info(f"Successfully created table with {key}.")
+
+        except Exception as e:
+            logging.error(f"Failed to stage {key}: {e}", exc_info=True)
+            # In a batch job, we continue to the next file instead of exiting
+            continue
+
+    logging.info("Staging batch complete.")
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    s3_bucket = os.environ.get("S3_BUCKET")
-    s3_key = os.environ.get("S3_KEY")
-
-    if not s3_bucket or not s3_key:
-        logging.error("S3_BUCKET and S3_KEY environment variables are required.")
+    files_json = os.environ.get("FILES_JSON")
+    if not files_json:
+        logging.error("FILES_JSON environment variable is required.")
         sys.exit(1)
 
-    stage_data(s3_bucket, s3_key)
+    try:
+        files_to_process = json.loads(files_json)
+        stage_batch(files_to_process)
+    except json.JSONDecodeError:
+        logging.error("Invalid JSON provided in FILES_JSON.")
+        sys.exit(1)

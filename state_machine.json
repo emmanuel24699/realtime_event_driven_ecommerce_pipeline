@@ -7,7 +7,7 @@
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
         "LaunchType": "FARGATE",
-        "Cluster": "default",
+        "Cluster": "lab6-ecommerce-cluster",
         "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/validator-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
@@ -33,6 +33,7 @@
           ]
         }
       },
+      "ResultPath": "$.task_result",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -46,7 +47,7 @@
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
         "LaunchType": "FARGATE",
-        "Cluster": "default",
+        "Cluster": "lab6-ecommerce-cluster",
         "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/staging-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
@@ -76,6 +77,7 @@
           ]
         }
       },
+      "ResultPath": "$.task_result",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -89,7 +91,7 @@
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
         "LaunchType": "FARGATE",
-        "Cluster": "default",
+        "Cluster": "lab6-ecommerce-cluster",
         "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/transformer-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
@@ -115,6 +117,7 @@
           ]
         }
       },
+      "ResultPath": "$.task_result",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -125,40 +128,44 @@
     },
     "MoveFileToArchive": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::s3:copyObject",
+      "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
       "Parameters": {
         "Bucket": "lab6-realtime-ecommerce-pipelines",
-        "CopySource.$": "States.Format('lab6-realtime-ecommerce-pipelines/{}', $.detail.object.key)",
+        "CopySource.$": "States.Format('{}/{}', $.detail.bucket.name, $.detail.object.key)",
         "Key.$": "States.Format('archive/{}', $.detail.object.key)"
       },
+      "ResultPath": null,
       "Next": "DeleteOriginalFile"
     },
     "DeleteOriginalFile": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::s3:deleteObject",
+      "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
       "Parameters": {
-        "Bucket": "lab6-realtime-ecommerce-pipelines",
+        "Bucket.$": "$.detail.bucket.name",
         "Key.$": "$.detail.object.key"
       },
+      "ResultPath": null,
       "End": true
     },
     "MoveFileToRejected": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::s3:copyObject",
+      "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
       "Parameters": {
         "Bucket": "lab6-realtime-ecommerce-pipelines",
-        "CopySource.$": "States.Format('lab6-realtime-ecommerce-pipelines/{}', $.detail.object.key)",
+        "CopySource.$": "States.Format('{}/{}', $.detail.bucket.name, $.detail.object.key)",
         "Key.$": "States.Format('rejected/{}', $.detail.object.key)"
       },
+      "ResultPath": null,
       "Next": "DeleteRejectedOriginalFile"
     },
     "DeleteRejectedOriginalFile": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::s3:deleteObject",
+      "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
       "Parameters": {
-        "Bucket": "lab6-realtime-ecommerce-pipelines",
+        "Bucket.$": "$.detail.bucket.name",
         "Key.$": "$.detail.object.key"
       },
+      "ResultPath": null,
       "Next": "NotifyFailure"
     },
     "NotifyFailure": {
