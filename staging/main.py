@@ -4,6 +4,7 @@ import pandas as pd
 import boto3
 from deltalake import DeltaTable
 from deltalake.writer import write_deltalake
+from deltalake.exceptions import TableNotFoundError  # <-- FIX #1: Import the exception
 
 
 def stage_data(bucket_name, file_key):
@@ -36,7 +37,6 @@ def stage_data(bucket_name, file_key):
     print(f"Staging data to Delta table: {staging_path} on merge key: {merge_key}")
 
     try:
-        # Load the new data from the S3 CSV file
         s3_client = boto3.client("s3")
         response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
         source_df = pd.read_csv(response.get("Body"))
@@ -45,10 +45,8 @@ def stage_data(bucket_name, file_key):
             if "date" in col and source_df[col].dtype == "object":
                 source_df[col] = pd.to_datetime(source_df[col], errors="coerce")
 
-        # Attempt to load the existing Delta table
         delta_table = DeltaTable(staging_path, storage_options=storage_options)
 
-        # If table exists, perform the merge (upsert) operation
         print(f"Target table found. Merging data...")
         (
             delta_table.merge(
@@ -63,8 +61,7 @@ def stage_data(bucket_name, file_key):
         )
         print(f"Successfully merged data into {staging_path}.")
 
-    except DeltaTable.TableNotFoundError:
-        # If the table doesn't exist, this is the first write.
+    except TableNotFoundError:  # <-- FIX #2: Use the imported exception
         print(f"Table {staging_path} not found. Performing initial write.")
         write_deltalake(
             staging_path, source_df, mode="overwrite", storage_options=storage_options
