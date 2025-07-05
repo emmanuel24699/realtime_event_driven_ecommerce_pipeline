@@ -1,229 +1,176 @@
 {
-  "Comment": "E-commerce pipeline orchestration",
-  "StartAt": "ValidateTask",
+  "Comment": "E-commerce data pipeline orchestrator",
+  "StartAt": "ValidationTask",
   "States": {
-    "ValidateTask": {
+    "ValidationTask": {
       "Type": "Task",
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
         "LaunchType": "FARGATE",
-        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
-        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-validation-task",
+        "Cluster": "default",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/validator-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
-            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
-            "AssignPublicIp": "DISABLED"
+            "Subnets": ["subnet-012d1aa4f3bd10af8"],
+            "AssignPublicIp": "ENABLED"
           }
         },
         "Overrides": {
           "ContainerOverrides": [
             {
-              "Name": "validation-container",
+              "Name": "validator",
               "Environment": [
                 {
-                  "Name": "EVENT_DATA",
-                  "Value.$": "States.JsonToString($)"
+                  "Name": "S3_BUCKET",
+                  "Value.$": "$.detail.bucket.name"
+                },
+                {
+                  "Name": "S3_KEY",
+                  "Value.$": "$.detail.object.key"
                 }
               ]
             }
           ]
         }
       },
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyFailure"
+          "Next": "MoveFileToRejected"
         }
       ],
-      "Next": "ValidationChoice"
+      "Next": "StagingTask"
     },
-    "ValidationChoice": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.Output",
-          "BooleanEquals": true,
-          "Next": "StageTask"
-        }
-      ],
-      "Default": "NotifyFailure"
-    },
-    "StageTask": {
+    "StagingTask": {
       "Type": "Task",
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
         "LaunchType": "FARGATE",
-        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
-        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-staging-task",
+        "Cluster": "default",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/staging-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
-            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
-            "AssignPublicIp": "DISABLED"
+            "Subnets": ["subnet-012d1aa4f3bd10af8"],
+            "AssignPublicIp": "ENABLED"
           }
         },
         "Overrides": {
           "ContainerOverrides": [
             {
-              "Name": "staging-container",
+              "Name": "staging",
               "Environment": [
                 {
-                  "Name": "EVENT_DATA",
-                  "Value.$": "States.JsonToString($)"
+                  "Name": "S3_BUCKET",
+                  "Value.$": "$.detail.bucket.name"
+                },
+                {
+                  "Name": "S3_KEY",
+                  "Value.$": "$.detail.object.key"
+                },
+                {
+                  "Name": "AWS_REGION",
+                  "Value": "us-east-1"
                 }
               ]
             }
           ]
         }
       },
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 10,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
           "Next": "NotifyFailure"
         }
       ],
-      "Next": "IsOrderItemsChoice"
+      "Next": "TransformationTask"
     },
-    "IsOrderItemsChoice": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.Records[0].s3.object.key",
-          "StringMatches": "input/*order_items*",
-          "Next": "TransformTask"
-        }
-      ],
-      "Default": "Success"
-    },
-    "TransformTask": {
+    "TransformationTask": {
       "Type": "Task",
       "Resource": "arn:aws:states:::ecs:runTask.sync",
       "Parameters": {
         "LaunchType": "FARGATE",
-        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
-        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-transformation-task",
+        "Cluster": "default",
+        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/transformer-task",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
-            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
-            "AssignPublicIp": "DISABLED"
+            "Subnets": ["subnet-012d1aa4f3bd10af8"],
+            "AssignPublicIp": "ENABLED"
           }
         },
         "Overrides": {
           "ContainerOverrides": [
             {
-              "Name": "transformation-container",
+              "Name": "transformer",
               "Environment": [
                 {
-                  "Name": "EVENT_DATA",
-                  "Value.$": "States.JsonToString($)"
+                  "Name": "S3_BUCKET",
+                  "Value.$": "$.detail.bucket.name"
+                },
+                {
+                  "Name": "AWS_REGION",
+                  "Value": "us-east-1"
                 }
               ]
             }
           ]
         }
       },
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 10,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
           "Next": "NotifyFailure"
         }
       ],
-      "Next": "DynamoDBTask"
+      "Next": "MoveFileToArchive"
     },
-    "DynamoDBTask": {
+    "MoveFileToArchive": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Resource": "arn:aws:states:::s3:copyObject",
       "Parameters": {
-        "LaunchType": "FARGATE",
-        "Cluster": "arn:aws:ecs:us-east-1:985539772768:cluster/lab6-ecommerce-cluster",
-        "TaskDefinition": "arn:aws:ecs:us-east-1:985539772768:task-definition/lab6-dynamodb-task",
-        "NetworkConfiguration": {
-          "AwsvpcConfiguration": {
-            "Subnets": ["subnet-012d1aa4f3bd10af8", "subnet-06ea69061a23f5360"],
-            "SecurityGroups": ["sg-0f2388a02cbe58ce6"],
-            "AssignPublicIp": "DISABLED"
-          }
-        },
-        "Overrides": {
-          "ContainerOverrides": [
-            {
-              "Name": "dynamodb-container",
-              "Environment": [
-                {
-                  "Name": "EVENT_DATA",
-                  "Value.$": "States.JsonToString($)"
-                }
-              ]
-            }
-          ]
-        }
+        "Bucket": "lab6-realtime-ecommerce-pipelines",
+        "CopySource.$": "States.Format('lab6-realtime-ecommerce-pipelines/{}', $.detail.object.key)",
+        "Key.$": "States.Format('archive/{}', $.detail.object.key)"
       },
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 10,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyFailure"
-        }
-      ],
-      "Next": "Success"
+      "Next": "DeleteOriginalFile"
+    },
+    "DeleteOriginalFile": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::s3:deleteObject",
+      "Parameters": {
+        "Bucket": "lab6-realtime-ecommerce-pipelines",
+        "Key.$": "$.detail.object.key"
+      },
+      "End": true
+    },
+    "MoveFileToRejected": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::s3:copyObject",
+      "Parameters": {
+        "Bucket": "lab6-realtime-ecommerce-pipelines",
+        "CopySource.$": "States.Format('lab6-realtime-ecommerce-pipelines/{}', $.detail.object.key)",
+        "Key.$": "States.Format('rejected/{}', $.detail.object.key)"
+      },
+      "Next": "DeleteRejectedOriginalFile"
+    },
+    "DeleteRejectedOriginalFile": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::s3:deleteObject",
+      "Parameters": {
+        "Bucket": "lab6-realtime-ecommerce-pipelines",
+        "Key.$": "$.detail.object.key"
+      },
+      "Next": "NotifyFailure"
     },
     "NotifyFailure": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
-        "TopicArn": "arn:aws:sns:us-east-1:985539772768:lab6-pipeline-failure-notifications",
-        "Message": "Pipeline failed for file: $.Records[0].s3.object.key",
-        "Subject": "E-commerce Pipeline Failure"
-      },
-      "Next": "SendToDLQ"
-    },
-    "SendToDLQ": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage",
-      "Parameters": {
-        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/985539772768/lab6-pipeline-dlq",
-        "MessageBody": {
-          "FileKey.$": "$.Records[0].s3.object.key",
-          "Error.$": "$.Error"
+        "TopicArn": "arn:aws:sns:us-east-1:985539772768:PipelineFailureNotifications",
+        "Message": {
+          "Input.$": "$"
         }
       },
       "End": true
-    },
-    "Success": {
-      "Type": "Succeed"
     }
   }
 }
