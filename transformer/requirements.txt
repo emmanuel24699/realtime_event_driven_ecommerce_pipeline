@@ -2,3 +2,4 @@ pyspark
 boto3
 deltalake
 s3fs
+deltalake-spark

@@ -8,10 +8,12 @@ from pyspark.sql.types import DateType
 
 
 def transform_and_load(bucket_name):
-    """Reads from Delta tables using Spark, computes KPIs, and loads to DynamoDB."""
+    """
+    Reads from Delta tables using Spark, computes KPIs, and loads to DynamoDB.
+    """
     print("Initializing Spark session...")
 
-    # Initialize Spark Session with Delta Lake support
+    # Spark configuration to include Delta and S3 packages
     spark = (
         SparkSession.builder.appName("Ecommerce-ETL-Transformer")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
@@ -33,22 +35,35 @@ def transform_and_load(bucket_name):
         print("Successfully loaded data from all Delta tables into Spark.")
 
         # --- Data Transformation & KPI Calculation ---
-        orders_df = orders_df.withColumn("order_date", F.to_date(F.col("created_at")))
 
-        # Join the dataframes
-        df = order_items_df.join(
-            products_df, order_items_df.product_id == products_df.id
-        ).join(orders_df, order_items_df.order_id == orders_df.order_id)
+        # 1. Prepare dataframes by renaming ambiguous columns BEFORE joining
+        orders_renamed_df = orders_df.withColumn(
+            "order_date", F.to_date(F.col("created_at"))
+        ).withColumnRenamed("status", "order_status")
 
-        # --- 1. Order-Level KPIs ---
+        order_items_renamed_df = order_items_df.withColumnRenamed(
+            "id", "order_item_id"
+        ).withColumnRenamed("status", "item_status")
+
+        # 2. Join the dataframes
+        df = order_items_renamed_df.join(
+            products_df, order_items_renamed_df.product_id == products_df.id, "inner"
+        ).join(
+            orders_renamed_df,
+            order_items_renamed_df.order_id == orders_renamed_df.order_id,
+            "inner",
+        )
+
+        # 3. Calculate Order-Level KPIs using the new, unambiguous column names
         daily_kpis = df.groupBy("order_date").agg(
             F.sum("sale_price").alias("total_revenue"),
-            F.count("id_item").alias("total_items_sold"),
-            F.countDistinct("order_id_item").alias("total_orders"),
-            F.countDistinct("user_id_item").alias("unique_customers"),
+            F.count("order_item_id").alias("total_items_sold"),
+            F.countDistinct("order_id").alias("total_orders"),
+            F.countDistinct("user_id").alias("unique_customers"),
         )
+
         returned_orders = (
-            orders_df.filter(F.col("status") == "returned")
+            orders_renamed_df.filter(F.col("order_status") == "returned")
             .groupBy("order_date")
             .agg(F.countDistinct("order_id").alias("returned_orders"))
         )
@@ -60,21 +75,21 @@ def transform_and_load(bucket_name):
                 "return_rate", (F.col("returned_orders") / F.col("total_orders")) * 100
             )
         )
-
         print("Calculated Order-Level KPIs with Spark.")
 
-        # --- 2. Category-Level KPIs ---
+        # 4. Calculate Category-Level KPIs
         category_kpis = df.groupBy("order_date", "category").agg(
             F.sum("sale_price").alias("daily_revenue"),
-            F.countDistinct("order_id_item").alias("total_category_orders"),
+            F.countDistinct("order_id").alias("total_category_orders"),
         )
+
         returned_items = (
-            df.filter(F.col("status_item") == "returned")
+            df.filter(F.col("item_status") == "returned")
             .groupBy("order_date", "category")
-            .agg(F.count("id_item").alias("returned_items"))
+            .agg(F.count("order_item_id").alias("returned_items"))
         )
         total_items = df.groupBy("order_date", "category").agg(
-            F.count("id_item").alias("total_items")
+            F.count("order_item_id").alias("total_items")
         )
 
         category_kpis_df = (
@@ -90,14 +105,11 @@ def transform_and_load(bucket_name):
                 (F.col("returned_items") / F.col("total_items")) * 100,
             )
         )
-
         print("Calculated Category-Level KPIs with Spark.")
 
         # --- Load to DynamoDB ---
-        # Collect results to driver (KPI datasets are small) and load using Boto3
         dynamodb = boto3.resource("dynamodb")
 
-        # Load Order-Level KPIs
         order_table = dynamodb.Table("OrderKPIs")
         with order_table.batch_writer(overwrite_by_pkeys=["order_date"]) as batch:
             for row in daily_kpis_df.collect():
@@ -113,7 +125,6 @@ def transform_and_load(bucket_name):
                 )
         print("Loaded Order-Level KPIs to DynamoDB.")
 
-        # Load Category-Level KPIs
         category_table = dynamodb.Table("CategoryKPIs")
         with category_table.batch_writer(
             overwrite_by_pkeys=["category", "order_date"]
