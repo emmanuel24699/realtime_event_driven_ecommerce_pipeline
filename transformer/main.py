@@ -4,7 +4,6 @@ import boto3
 from decimal import Decimal
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DateType
 
 
 def transform_and_load(bucket_name):
@@ -13,7 +12,6 @@ def transform_and_load(bucket_name):
     """
     print("Initializing Spark session...")
 
-    # Spark configuration to include Delta and S3 packages
     spark = (
         SparkSession.builder.appName("Ecommerce-ETL-Transformer")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
@@ -36,23 +34,24 @@ def transform_and_load(bucket_name):
 
         # --- Data Transformation & KPI Calculation ---
 
-        # 1. Prepare dataframes by renaming ambiguous columns BEFORE joining
-        orders_renamed_df = orders_df.withColumn(
-            "order_date", F.to_date(F.col("created_at"))
-        ).withColumnRenamed("status", "order_status")
+        # 1. Prepare dataframes by renaming ALL ambiguous columns before joining
+        orders_renamed_df = (
+            orders_df.withColumn("order_date", F.to_date(F.col("created_at")))
+            .withColumnRenamed("user_id", "order_user_id")
+            .withColumnRenamed("status", "order_status")
+            .withColumnRenamed("created_at", "order_created_at")
+        )
 
         order_items_renamed_df = order_items_df.withColumnRenamed(
             "id", "order_item_id"
         ).withColumnRenamed("status", "item_status")
 
-        # 2. Join the dataframes
-        df = order_items_renamed_df.join(
+        # 2. Join the dataframes. Using a list for the join key `["order_id"]`
+        # automatically handles the duplicate key column.
+        df_items_products = order_items_renamed_df.join(
             products_df, order_items_renamed_df.product_id == products_df.id, "inner"
-        ).join(
-            orders_renamed_df,
-            order_items_renamed_df.order_id == orders_renamed_df.order_id,
-            "inner",
         )
+        df = df_items_products.join(orders_renamed_df, ["order_id"], "inner")
 
         # 3. Calculate Order-Level KPIs using the new, unambiguous column names
         daily_kpis = df.groupBy("order_date").agg(
