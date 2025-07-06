@@ -32,7 +32,7 @@ def transform_and_load(bucket_name):
     )
 
     try:
-        # --- 1. Load Data from Delta Lake ---
+        # --- 1. Load Data ---
         base_path = f"s3a://{bucket_name}/staging"
         products_df = spark.read.format("delta").load(f"{base_path}/products")
         orders_df = spark.read.format("delta").load(f"{base_path}/orders")
@@ -41,11 +41,8 @@ def transform_and_load(bucket_name):
             "Successfully loaded data from all partitioned Delta tables into Spark."
         )
 
-        # --- 2. Extensive Data Cleaning and Wrangling ---
+        # --- 2. Data Cleaning ---
         logging.info("Starting data cleaning and wrangling phase...")
-
-        # a) Clean products_df
-        logging.info("Cleaning products table...")
         products_cleaned_df = (
             products_df.withColumn("name", F.trim(F.col("name")))
             .withColumn("brand", F.trim(F.col("brand")))
@@ -62,8 +59,6 @@ def transform_and_load(bucket_name):
             f"Products table cleaned. Rows remaining: {products_cleaned_df.count()}"
         )
 
-        # b) Clean orders_df
-        logging.info("Cleaning orders table...")
         orders_cleaned_df = (
             orders_df.withColumn("created_at_ts", F.to_timestamp(F.col("created_at")))
             .withColumn("order_date", F.to_date(F.col("created_at_ts")))
@@ -76,8 +71,6 @@ def transform_and_load(bucket_name):
             f"Orders table cleaned. Rows remaining: {orders_cleaned_df.count()}"
         )
 
-        # c) Clean order_items_df
-        logging.info("Cleaning order_items table...")
         order_items_cleaned_df = (
             order_items_df.filter(F.col("product_id").isNotNull())
             .filter(F.col("sale_price") > 0)
@@ -91,12 +84,18 @@ def transform_and_load(bucket_name):
         # --- 3. Join Cleaned DataFrames ---
         logging.info("Joining cleaned dataframes...")
 
-        orders_renamed_df = orders_cleaned_df.withColumnRenamed(
-            "status", "order_status"
+        # *** THE FIX: Proactively rename ALL potentially ambiguous columns before joining ***
+        orders_renamed_df = (
+            orders_cleaned_df.withColumnRenamed("user_id", "order_user_id")
+            .withColumnRenamed("status", "order_status")
+            .withColumnRenamed("created_at", "order_created_at")
         )
-        order_items_renamed_df = order_items_cleaned_df.withColumnRenamed(
-            "id", "order_item_id"
-        ).withColumnRenamed("status", "item_status")
+
+        order_items_renamed_df = (
+            order_items_cleaned_df.withColumnRenamed("id", "order_item_id")
+            .withColumnRenamed("status", "item_status")
+            .withColumnRenamed("created_at", "item_created_at")
+        )
 
         df_items_products = order_items_renamed_df.join(
             products_cleaned_df,
