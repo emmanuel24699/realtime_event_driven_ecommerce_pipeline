@@ -5,14 +5,6 @@ import boto3
 from decimal import Decimal
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    LongType,
-    DoubleType,
-    IntegerType,
-)
 from pyspark.errors import PySparkException
 from botocore.exceptions import ClientError
 
@@ -40,51 +32,7 @@ def transform_and_load(bucket_name):
     )
 
     try:
-        # --- 1. Define Explicit Schemas ---
-        logging.info("Defining explicit schemas for data sources...")
-
-        products_schema = StructType(
-            [
-                StructField("id", LongType(), True),
-                StructField("sku", StringType(), True),
-                StructField("cost", DoubleType(), True),
-                StructField("category", StringType(), True),
-                StructField("name", StringType(), True),
-                StructField("brand", StringType(), True),
-                StructField("retail_price", DoubleType(), True),
-                StructField("department", StringType(), True),
-            ]
-        )
-
-        orders_schema = StructType(
-            [
-                StructField("order_id", LongType(), True),
-                StructField("user_id", LongType(), True),
-                StructField("status", StringType(), True),
-                StructField("created_at", StringType(), True),
-                StructField("returned_at", StringType(), True),
-                StructField("shipped_at", StringType(), True),
-                StructField("delivered_at", StringType(), True),
-                StructField("num_of_item", LongType(), True),
-            ]
-        )
-
-        order_items_schema = StructType(
-            [
-                StructField("id", LongType(), True),
-                StructField("order_id", LongType(), True),
-                StructField("user_id", LongType(), True),
-                StructField("product_id", LongType(), True),
-                StructField("status", StringType(), True),
-                StructField("created_at", StringType(), True),
-                StructField("shipped_at", StringType(), True),
-                StructField("delivered_at", StringType(), True),
-                StructField("returned_at", StringType(), True),
-                StructField("sale_price", DoubleType(), True),
-            ]
-        )
-
-        # --- 2. Load Data from Delta Lake ---
+        # --- 1. Load Data from Delta Lake ---
         base_path = f"s3a://{bucket_name}/staging"
         products_df = spark.read.format("delta").load(f"{base_path}/products")
         orders_df = spark.read.format("delta").load(f"{base_path}/orders")
@@ -93,7 +41,7 @@ def transform_and_load(bucket_name):
             "Successfully loaded data from all partitioned Delta tables into Spark."
         )
 
-        # --- 3. Extensive Data Cleaning and Wrangling ---
+        # --- 2. Extensive Data Cleaning and Wrangling ---
         logging.info("Starting data cleaning and wrangling phase...")
 
         # a) Clean products_df
@@ -140,7 +88,7 @@ def transform_and_load(bucket_name):
             f"Order items table cleaned. Rows remaining: {order_items_cleaned_df.count()}"
         )
 
-        # --- 4. Join Cleaned DataFrames ---
+        # --- 3. Join Cleaned DataFrames ---
         logging.info("Joining cleaned dataframes...")
 
         orders_renamed_df = orders_cleaned_df.withColumnRenamed(
@@ -157,7 +105,7 @@ def transform_and_load(bucket_name):
         )
         df = df_items_products.join(orders_renamed_df, ["order_id"], "inner")
 
-        # --- 5. KPI Calculation ---
+        # --- 4. KPI Calculation ---
         logging.info("Calculating KPIs...")
 
         daily_kpis = df.groupBy("order_date").agg(
@@ -223,7 +171,7 @@ def transform_and_load(bucket_name):
         )
         logging.info("Calculated Category-Level KPIs.")
 
-        # --- 6. Load to DynamoDB ---
+        # --- 5. Load to DynamoDB ---
         logging.info("Loading KPIs to DynamoDB...")
         dynamodb = boto3.resource("dynamodb")
 
