@@ -5,9 +5,19 @@ import boto3
 from decimal import Decimal
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    LongType,
+    DoubleType,
+    TimestampType,
+    IntegerType,
+)
 from pyspark.errors import PySparkException
 from botocore.exceptions import ClientError
 
+# Configure structured logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -31,39 +41,135 @@ def transform_and_load(bucket_name):
     )
 
     try:
+        # --- 1. Define Explicit Schemas ---
+        logging.info("Defining explicit schemas for data sources...")
+
+        products_schema = StructType(
+            [
+                StructField("id", LongType(), True),
+                StructField("sku", StringType(), True),
+                StructField("cost", DoubleType(), True),
+                StructField("category", StringType(), True),
+                StructField("name", StringType(), True),
+                StructField("brand", StringType(), True),
+                StructField("retail_price", DoubleType(), True),
+                StructField("department", StringType(), True),
+            ]
+        )
+
+        orders_schema = StructType(
+            [
+                StructField("order_id", LongType(), True),
+                StructField("user_id", LongType(), True),
+                StructField("status", StringType(), True),
+                StructField("created_at", StringType(), True),
+                StructField("returned_at", StringType(), True),
+                StructField("shipped_at", StringType(), True),
+                StructField("delivered_at", StringType(), True),
+                StructField("num_of_item", LongType(), True),
+            ]
+        )
+
+        order_items_schema = StructType(
+            [
+                StructField("id", LongType(), True),
+                StructField("order_id", LongType(), True),
+                StructField("user_id", LongType(), True),
+                StructField("product_id", LongType(), True),
+                StructField("status", StringType(), True),
+                StructField("created_at", StringType(), True),
+                StructField("shipped_at", StringType(), True),
+                StructField("delivered_at", StringType(), True),
+                StructField("returned_at", StringType(), True),
+                StructField("sale_price", DoubleType(), True),
+            ]
+        )
+
+        # --- 2. Load Data from Delta Lake with Schemas ---
         base_path = f"s3a://{bucket_name}/staging"
-        products_df = spark.read.format("delta").load(f"{base_path}/products")
-        orders_df = spark.read.format("delta").load(f"{base_path}/orders")
-        order_items_df = spark.read.format("delta").load(f"{base_path}/order_items")
+        products_df = (
+            spark.read.format("delta")
+            .schema(products_schema)
+            .load(f"{base_path}/products")
+        )
+        orders_df = (
+            spark.read.format("delta").schema(orders_schema).load(f"{base_path}/orders")
+        )
+        order_items_df = (
+            spark.read.format("delta")
+            .schema(order_items_schema)
+            .load(f"{base_path}/order_items")
+        )
         logging.info(
             "Successfully loaded data from all partitioned Delta tables into Spark."
         )
 
-        # --- Data Transformation & KPI Calculation ---
-        orders_renamed_df = orders_df.withColumn(
-            "order_date", F.to_date(F.col("created_at"))
-        ).withColumnRenamed("status", "order_status")
+        # --- 3. Extensive Data Cleaning and Wrangling ---
+        logging.info("Starting data cleaning and wrangling phase...")
 
-        order_items_renamed_df = order_items_df.withColumnRenamed(
+        # a) Clean products_df
+        logging.info("Cleaning products table...")
+        products_cleaned_df = (
+            products_df.withColumn("name", F.trim(F.col("name")))
+            .withColumn("brand", F.trim(F.col("brand")))
+            .withColumn(
+                "category", F.trim(F.coalesce(F.col("category"), F.lit("Unknown")))
+            )
+            .withColumn(
+                "department", F.trim(F.coalesce(F.col("department"), F.lit("Unknown")))
+            )
+            .filter((F.col("cost") > 0) & (F.col("retail_price") > 0))
+            .dropDuplicates(["id"])
+        )
+        logging.info(
+            f"Products table cleaned. Rows remaining: {products_cleaned_df.count()}"
+        )
+
+        # b) Clean orders_df
+        logging.info("Cleaning orders table...")
+        orders_cleaned_df = (
+            orders_df.withColumn("created_at_ts", F.to_timestamp(F.col("created_at")))
+            .withColumn("order_date", F.to_date(F.col("created_at_ts")))
+            .withColumn("status", F.lower(F.trim(F.col("status"))))
+            .filter(F.col("order_date").isNotNull())
+            .filter(F.col("num_of_item") > 0)
+            .dropDuplicates(["order_id"])
+        )
+        logging.info(
+            f"Orders table cleaned. Rows remaining: {orders_cleaned_df.count()}"
+        )
+
+        # c) Clean order_items_df
+        logging.info("Cleaning order_items table...")
+        order_items_cleaned_df = (
+            order_items_df.filter(F.col("product_id").isNotNull())
+            .filter(F.col("sale_price") > 0)
+            .withColumn("status", F.lower(F.trim(F.col("status"))))
+            .dropDuplicates(["id"])
+        )
+        logging.info(
+            f"Order items table cleaned. Rows remaining: {order_items_cleaned_df.count()}"
+        )
+
+        # --- 4. Join Cleaned DataFrames ---
+        logging.info("Joining cleaned dataframes...")
+
+        orders_renamed_df = orders_cleaned_df.withColumnRenamed(
+            "status", "order_status"
+        )
+        order_items_renamed_df = order_items_cleaned_df.withColumnRenamed(
             "id", "order_item_id"
         ).withColumnRenamed("status", "item_status")
 
-        # *** THE FIX: Perform an explicit join and then drop the duplicate column ***
         df_items_products = order_items_renamed_df.join(
-            products_df, order_items_renamed_df.product_id == products_df.id, "inner"
-        )
-
-        # Join on the ambiguous key, which creates two 'order_id' columns
-        df_with_duplicates = df_items_products.join(
-            orders_renamed_df,
-            df_items_products.order_id == orders_renamed_df.order_id,
+            products_cleaned_df,
+            order_items_renamed_df.product_id == products_cleaned_df.id,
             "inner",
         )
+        df = df_items_products.join(orders_renamed_df, ["order_id"], "inner")
 
-        # Immediately drop the duplicate column from one of the original dataframes
-        df = df_with_duplicates.drop(orders_renamed_df.order_id)
-
-        # Now, 'df' has a single, unambiguous 'order_id' column
+        # --- 5. KPI Calculation ---
+        logging.info("Calculating KPIs...")
 
         daily_kpis = df.groupBy("order_date").agg(
             F.sum("sale_price").alias("total_revenue"),
@@ -80,10 +186,17 @@ def transform_and_load(bucket_name):
             daily_kpis.join(returned_orders, "order_date", "left_outer")
             .fillna(0)
             .withColumn(
-                "return_rate", (F.col("returned_orders") / F.col("total_orders")) * 100
+                "return_rate",
+                (
+                    F.col("total_orders")
+                    / F.when(
+                        F.col("total_orders") > 0, F.col("total_orders")
+                    ).otherwise(1)
+                )
+                * 100,
             )
         )
-        logging.info("Calculated Order-Level KPIs with Spark.")
+        logging.info("Calculated Order-Level KPIs.")
 
         category_kpis = df.groupBy("order_date", "category").agg(
             F.sum("sale_price").alias("daily_revenue"),
@@ -103,16 +216,26 @@ def transform_and_load(bucket_name):
             .fillna(0)
             .withColumn(
                 "avg_order_value",
-                F.col("daily_revenue") / F.col("total_category_orders"),
+                F.col("daily_revenue")
+                / F.when(
+                    F.col("total_category_orders") > 0, F.col("total_category_orders")
+                ).otherwise(1),
             )
             .withColumn(
                 "avg_return_rate",
-                (F.col("returned_items") / F.col("total_items")) * 100,
+                (
+                    F.col("returned_items")
+                    / F.when(F.col("total_items") > 0, F.col("total_items")).otherwise(
+                        1
+                    )
+                )
+                * 100,
             )
         )
-        logging.info("Calculated Category-Level KPIs with Spark.")
+        logging.info("Calculated Category-Level KPIs.")
 
-        # --- Load to DynamoDB ---
+        # --- 6. Load to DynamoDB ---
+        logging.info("Loading KPIs to DynamoDB...")
         dynamodb = boto3.resource("dynamodb")
 
         order_table = dynamodb.Table("OrderKPIs")
