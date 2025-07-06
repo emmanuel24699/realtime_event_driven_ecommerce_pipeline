@@ -31,8 +31,6 @@ def transform_and_load(bucket_name):
     )
 
     try:
-        # --- Read Data from Delta Lake ---
-        # Spark will automatically use the partitions in the Delta tables for faster reads (partition pruning).
         base_path = f"s3a://{bucket_name}/staging"
         products_df = spark.read.format("delta").load(f"{base_path}/products")
         orders_df = spark.read.format("delta").load(f"{base_path}/orders")
@@ -42,21 +40,30 @@ def transform_and_load(bucket_name):
         )
 
         # --- Data Transformation & KPI Calculation ---
-        orders_renamed_df = (
-            orders_df.withColumn("order_date", F.to_date(F.col("created_at")))
-            .withColumnRenamed("user_id", "order_user_id")
-            .withColumnRenamed("status", "order_status")
-            .withColumnRenamed("created_at", "order_created_at")
-        )
+        orders_renamed_df = orders_df.withColumn(
+            "order_date", F.to_date(F.col("created_at"))
+        ).withColumnRenamed("status", "order_status")
 
         order_items_renamed_df = order_items_df.withColumnRenamed(
             "id", "order_item_id"
         ).withColumnRenamed("status", "item_status")
 
+        # *** THE FIX: Perform an explicit join and then drop the duplicate column ***
         df_items_products = order_items_renamed_df.join(
             products_df, order_items_renamed_df.product_id == products_df.id, "inner"
         )
-        df = df_items_products.join(orders_renamed_df, ["order_id"], "inner")
+
+        # Join on the ambiguous key, which creates two 'order_id' columns
+        df_with_duplicates = df_items_products.join(
+            orders_renamed_df,
+            df_items_products.order_id == orders_renamed_df.order_id,
+            "inner",
+        )
+
+        # Immediately drop the duplicate column from one of the original dataframes
+        df = df_with_duplicates.drop(orders_renamed_df.order_id)
+
+        # Now, 'df' has a single, unambiguous 'order_id' column
 
         daily_kpis = df.groupBy("order_date").agg(
             F.sum("sale_price").alias("total_revenue"),
