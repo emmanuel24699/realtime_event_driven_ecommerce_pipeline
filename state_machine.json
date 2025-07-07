@@ -1,5 +1,5 @@
 {
-  "Comment": "E-commerce data pipeline orchestrator",
+  "Comment": "Production-grade, batch-oriented e-commerce data pipeline with S3 data passing",
   "StartAt": "ValidationTask",
   "States": {
     "ValidationTask": {
@@ -21,26 +21,89 @@
               "Name": "validator",
               "Environment": [
                 {
-                  "Name": "S3_BUCKET",
-                  "Value.$": "$.detail.bucket.name"
+                  "Name": "FILES_JSON",
+                  "Value.$": "States.JsonToString($.files)"
                 },
                 {
-                  "Name": "S3_KEY",
-                  "Value.$": "$.detail.object.key"
+                  "Name": "EXECUTION_ID",
+                  "Value.$": "$.execution_id"
+                },
+                {
+                  "Name": "RESULT_BUCKET",
+                  "Value": "lab6-realtime-ecommerce-pipelines"
                 }
               ]
             }
           ]
         }
       },
-      "ResultPath": "$.task_result",
+      "ResultPath": null,
+      "Next": "ReadValidationResult",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "MoveFileToRejected"
+          "Next": "NotifyBatchFailure"
+        }
+      ]
+    },
+    "ReadValidationResult": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:985539772768:function:Read-Validation-Result",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "Payload.$": "$.Payload"
+      },
+      "ResultPath": "$.ValidationResult",
+      "Next": "HandleInvalidFiles"
+    },
+    "HandleInvalidFiles": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "MoveToRejected",
+        "States": {
+          "MoveToRejected": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "CopySource.$": "States.Format('{}/{}', $.bucket, $.key)",
+              "Key.$": "States.Format('rejected/{}', $.key)"
+            },
+            "ResultPath": null,
+            "Next": "DeleteRejectedFileFromInput"
+          },
+          "DeleteRejectedFileFromInput": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "Key.$": "$.key"
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "ItemsPath": "$.ValidationResult.Payload.invalid_files",
+      "ResultPath": null,
+      "Next": "CheckIfAnyFilesAreValid"
+    },
+    "CheckIfAnyFilesAreValid": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.ValidationResult.Payload.valid_files[0]",
+          "IsPresent": true,
+          "Next": "StagingTask"
         }
       ],
-      "Next": "StagingTask"
+      "Default": "NoValidFiles"
     },
     "StagingTask": {
       "Type": "Task",
@@ -61,12 +124,8 @@
               "Name": "staging",
               "Environment": [
                 {
-                  "Name": "S3_BUCKET",
-                  "Value.$": "$.detail.bucket.name"
-                },
-                {
-                  "Name": "S3_KEY",
-                  "Value.$": "$.detail.object.key"
+                  "Name": "FILES_JSON",
+                  "Value.$": "States.JsonToString($.ValidationResult.Payload.valid_files)"
                 },
                 {
                   "Name": "AWS_REGION",
@@ -77,14 +136,14 @@
           ]
         }
       },
-      "ResultPath": "$.task_result",
+      "ResultPath": null,
+      "Next": "TransformationTask",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyFailure"
+          "Next": "NotifyBatchFailure"
         }
-      ],
-      "Next": "TransformationTask"
+      ]
     },
     "TransformationTask": {
       "Type": "Task",
@@ -106,7 +165,7 @@
               "Environment": [
                 {
                   "Name": "S3_BUCKET",
-                  "Value.$": "$.detail.bucket.name"
+                  "Value": "lab6-realtime-ecommerce-pipelines"
                 },
                 {
                   "Name": "AWS_REGION",
@@ -117,64 +176,75 @@
           ]
         }
       },
-      "ResultPath": "$.task_result",
+      "ResultPath": null,
+      "Next": "ArchiveValidFiles",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "NotifyFailure"
+          "Next": "NotifyBatchFailure"
         }
-      ],
-      "Next": "MoveFileToArchive"
+      ]
     },
-    "MoveFileToArchive": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
-      "Parameters": {
-        "Bucket": "lab6-realtime-ecommerce-pipelines",
-        "CopySource.$": "States.Format('{}/{}', $.detail.bucket.name, $.detail.object.key)",
-        "Key.$": "States.Format('archive/{}', $.detail.object.key)"
+    "ArchiveValidFiles": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "MoveToArchive",
+        "States": {
+          "MoveToArchive": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "CopySource.$": "States.Format('{}/{}', $.bucket, $.key)",
+              "Key.$": "States.Format('archive/{}', $.key)"
+            },
+            "ResultPath": null,
+            "Next": "DeleteArchivedFileFromInput"
+          },
+          "DeleteArchivedFileFromInput": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "Key.$": "$.key"
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
       },
+      "ItemsPath": "$.ValidationResult.Payload.valid_files",
       "ResultPath": null,
-      "Next": "DeleteOriginalFile"
+      "Next": "NotifyBatchSuccess"
     },
-    "DeleteOriginalFile": {
+    "NoValidFiles": {
+      "Type": "Succeed"
+    },
+    "NotifyBatchSuccess": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+      "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
-        "Bucket.$": "$.detail.bucket.name",
-        "Key.$": "$.detail.object.key"
+        "TopicArn": "arn:aws:sns:us-east-1:985539772768:PipelineSuccessNotifications",
+        "Message": {
+          "Status": "SUCCESS",
+          "Message": "The e-commerce data processing batch completed successfully.",
+          "ExecutionId.$": "$.execution_id",
+          "ValidFilesProcessed.$": "States.JsonToString($.ValidationResult.Payload.valid_files)"
+        }
       },
-      "ResultPath": null,
       "End": true
     },
-    "MoveFileToRejected": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
-      "Parameters": {
-        "Bucket": "lab6-realtime-ecommerce-pipelines",
-        "CopySource.$": "States.Format('{}/{}', $.detail.bucket.name, $.detail.object.key)",
-        "Key.$": "States.Format('rejected/{}', $.detail.object.key)"
-      },
-      "ResultPath": null,
-      "Next": "DeleteRejectedOriginalFile"
-    },
-    "DeleteRejectedOriginalFile": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
-      "Parameters": {
-        "Bucket.$": "$.detail.bucket.name",
-        "Key.$": "$.detail.object.key"
-      },
-      "ResultPath": null,
-      "Next": "NotifyFailure"
-    },
-    "NotifyFailure": {
+    "NotifyBatchFailure": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "arn:aws:sns:us-east-1:985539772768:PipelineFailureNotifications",
         "Message": {
-          "Input.$": "$"
+          "Error": "A batch processing job has failed.",
+          "ExecutionInput.$": "$"
         }
       },
       "End": true
