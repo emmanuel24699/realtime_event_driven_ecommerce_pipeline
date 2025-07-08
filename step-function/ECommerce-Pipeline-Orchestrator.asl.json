@@ -1,0 +1,252 @@
+{
+  "Comment": "Production-grade, batch-oriented e-commerce data pipeline with S3 data passing",
+  "StartAt": "ValidationTask",
+  "States": {
+    "ValidationTask": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:__AWS_REGION__:__AWS_ACCOUNT_ID__:task-definition/validator-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["__SUBNET_ID__"],
+            "AssignPublicIp": "ENABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "validator",
+              "Environment": [
+                {
+                  "Name": "FILES_JSON",
+                  "Value.$": "States.JsonToString($.files)"
+                },
+                {
+                  "Name": "EXECUTION_ID",
+                  "Value.$": "$.execution_id"
+                },
+                {
+                  "Name": "RESULT_BUCKET",
+                  "Value": "lab6-realtime-ecommerce-pipelines"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": null,
+      "Next": "ReadValidationResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyBatchFailure"
+        }
+      ]
+    },
+    "ReadValidationResult": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:__AWS_REGION__:__AWS_ACCOUNT_ID__:function:Read-Validation-Result",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "Payload.$": "$.Payload"
+      },
+      "ResultPath": "$.ValidationResult",
+      "Next": "HandleInvalidFiles"
+    },
+    "HandleInvalidFiles": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "MoveToRejected",
+        "States": {
+          "MoveToRejected": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "CopySource.$": "States.Format('{}/{}', $.bucket, $.key)",
+              "Key.$": "States.Format('rejected/{}', $.key)"
+            },
+            "ResultPath": null,
+            "Next": "DeleteRejectedFileFromInput"
+          },
+          "DeleteRejectedFileFromInput": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "Key.$": "$.key"
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "ItemsPath": "$.ValidationResult.Payload.invalid_files",
+      "ResultPath": null,
+      "Next": "CheckIfAnyFilesAreValid"
+    },
+    "CheckIfAnyFilesAreValid": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.ValidationResult.Payload.valid_files[0]",
+          "IsPresent": true,
+          "Next": "StagingTask"
+        }
+      ],
+      "Default": "NoValidFiles"
+    },
+    "StagingTask": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:__AWS_REGION__:__AWS_ACCOUNT_ID__:task-definition/staging-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["__SUBNET_ID__"],
+            "AssignPublicIp": "ENABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "staging",
+              "Environment": [
+                {
+                  "Name": "FILES_JSON",
+                  "Value.$": "States.JsonToString($.ValidationResult.Payload.valid_files)"
+                },
+                {
+                  "Name": "AWS_REGION",
+                  "Value": "__AWS_REGION__"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": null,
+      "Next": "TransformationTask",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyBatchFailure"
+        }
+      ]
+    },
+    "TransformationTask": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "lab6-ecommerce-cluster",
+        "TaskDefinition": "arn:aws:ecs:__AWS_REGION__:__AWS_ACCOUNT_ID__:task-definition/transformer-task",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["__SUBNET_ID__"],
+            "AssignPublicIp": "ENABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "transformer",
+              "Environment": [
+                {
+                  "Name": "S3_BUCKET",
+                  "Value": "lab6-realtime-ecommerce-pipelines"
+                },
+                {
+                  "Name": "AWS_REGION",
+                  "Value": "__AWS_REGION__"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": null,
+      "Next": "ArchiveValidFiles",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyBatchFailure"
+        }
+      ]
+    },
+    "ArchiveValidFiles": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "MoveToArchive",
+        "States": {
+          "MoveToArchive": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "CopySource.$": "States.Format('{}/{}', $.bucket, $.key)",
+              "Key.$": "States.Format('archive/{}', $.key)"
+            },
+            "ResultPath": null,
+            "Next": "DeleteArchivedFileFromInput"
+          },
+          "DeleteArchivedFileFromInput": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+            "Parameters": {
+              "Bucket.$": "$.bucket",
+              "Key.$": "$.key"
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "ItemsPath": "$.ValidationResult.Payload.valid_files",
+      "ResultPath": null,
+      "Next": "NotifyBatchSuccess"
+    },
+    "NoValidFiles": {
+      "Type": "Succeed"
+    },
+    "NotifyBatchSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:__AWS_REGION__:__AWS_ACCOUNT_ID__:PipelineSuccessNotifications",
+        "Message": {
+          "Status": "SUCCESS",
+          "Message": "The e-commerce data processing batch completed successfully.",
+          "ExecutionId.$": "$.execution_id"
+        }
+      },
+      "End": true
+    },
+    "NotifyBatchFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:__AWS_REGION__:__AWS_ACCOUNT_ID__:PipelineFailureNotifications",
+        "Message": {
+          "Error": "A batch processing job has failed.",
+          "ExecutionInput.$": "$"
+        }
+      },
+      "End": true
+    }
+  }
+}

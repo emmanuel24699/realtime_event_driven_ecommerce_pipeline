@@ -1,4 +1,43 @@
-name: Build and Deploy Services to ECR
+# name: Build and Deploy Services to ECR
+
+# on:
+#   push:
+#     branches:
+#       - main
+
+# jobs:
+#   build-and-push:
+#     name: Build and Push ${{ matrix.service }}
+#     runs-on: ubuntu-latest
+#     strategy:
+#       matrix:
+#         service: [validator, staging, transformer]
+
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ${{ secrets.AWS_REGION }}
+
+#       - name: Login to Amazon ECR
+#         id: login-ecr
+#         uses: aws-actions/amazon-ecr-login@v2
+
+#       - name: Build, tag, and push image to Amazon ECR
+#         env:
+#           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#           ECR_REPOSITORY: ecommerce-pipeline/${{ matrix.service }}
+#           IMAGE_TAG: latest
+#         run: |
+#           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./${{ matrix.service }}
+#           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+name: Build and Deploy Services
 
 on:
   push:
@@ -36,3 +75,35 @@ jobs:
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./${{ matrix.service }}
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+  deploy-step-function:
+    name: Deploy Step Function
+    runs-on: ubuntu-latest
+    needs: build-and-push # This job runs only after the 'build-and-push' job succeeds
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Prepare Step Function definition file
+        run: |
+          # This step replaces placeholders in your template file with values from GitHub Secrets
+          # The result is a ready-to-deploy definition file saved temporarily
+          sed -e "s|__AWS_ACCOUNT_ID__|${{ secrets.AWS_ACCOUNT_ID }}|g" \
+              -e "s|__AWS_REGION__|${{ secrets.AWS_REGION }}|g" \
+              -e "s|__SUBNET_ID__|${{ secrets.SUBNET_ID }}|g" \
+              step-function/ECommerce-Pipeline-Orchestrator.asl.json > /tmp/step-function-def.json
+
+      - name: Update Step Function State Machine
+        run: |
+          aws stepfunctions update-state-machine \
+            --state-machine-arn "${{ secrets.STEP_FUNCTION_ARN }}" \
+            --definition "file:///tmp/step-function-def.json" \
+            --role-arn "${{ secrets.STEP_FUNCTION_ROLE_ARN }}"
