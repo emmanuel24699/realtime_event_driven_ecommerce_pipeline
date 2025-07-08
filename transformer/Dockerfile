@@ -16,7 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 5. Switch back to the non-root 'spark' user for security.
 USER 1001
 
-# 6. *** THE FINAL FIX ***
 # Set the default command to run our Python script using spark-submit.
 # --packages: Tells Spark to download the required Java libraries (JARs) for Delta Lake and S3.
 # --conf: Sets the driver host to prevent networking errors in Fargate.

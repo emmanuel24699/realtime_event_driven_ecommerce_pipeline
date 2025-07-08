@@ -84,7 +84,7 @@ def transform_and_load(bucket_name):
         # --- 3. Join Cleaned DataFrames ---
         logging.info("Joining cleaned dataframes...")
 
-        # *** THE FIX: Proactively rename ALL potentially ambiguous columns before joining ***
+        # Proactively rename ALL potentially ambiguous columns
         orders_renamed_df = (
             orders_cleaned_df.withColumnRenamed("user_id", "order_user_id")
             .withColumnRenamed("status", "order_status")

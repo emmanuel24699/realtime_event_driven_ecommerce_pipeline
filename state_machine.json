@@ -1,5 +1,5 @@
 {
-  "Comment": "Production-grade, batch-oriented e-commerce data pipeline with S3 data passing",
+  "Comment": "Production-grade pipeline with S3 logging for all tasks",
   "StartAt": "ValidationTask",
   "States": {
     "ValidationTask": {
@@ -128,6 +128,14 @@
                   "Value.$": "States.JsonToString($.ValidationResult.Payload.valid_files)"
                 },
                 {
+                  "Name": "EXECUTION_ID",
+                  "Value.$": "$.execution_id"
+                },
+                {
+                  "Name": "LOG_BUCKET",
+                  "Value": "lab6-realtime-ecommerce-pipelines"
+                },
+                {
                   "Name": "AWS_REGION",
                   "Value": "us-east-1"
                 }
@@ -166,6 +174,10 @@
                 {
                   "Name": "S3_BUCKET",
                   "Value": "lab6-realtime-ecommerce-pipelines"
+                },
+                {
+                  "Name": "EXECUTION_ID",
+                  "Value.$": "$.execution_id"
                 },
                 {
                   "Name": "AWS_REGION",
@@ -231,8 +243,7 @@
         "Message": {
           "Status": "SUCCESS",
           "Message": "The e-commerce data processing batch completed successfully.",
-          "ExecutionId.$": "$.execution_id",
-          "ValidFilesProcessed.$": "States.JsonToString($.ValidationResult.Payload.valid_files)"
+          "ExecutionId.$": "$.execution_id"
         }
       },
       "End": true

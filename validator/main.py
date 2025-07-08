@@ -74,7 +74,7 @@ def validate_batch(files_to_validate, execution_id, result_bucket):
             logging.error(f"Validation failed for {key}: {e}")
             invalid_files.append(file_info)
 
-    # *** THE FIX: Write the result to an S3 file instead of printing ***
+    # *** Write the result to an S3 file ***
     output = {"valid_files": valid_files, "invalid_files": invalid_files}
     result_key = f"results/{execution_id}.json"
 

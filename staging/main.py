@@ -87,7 +87,6 @@ def stage_batch(valid_files):
 
         except Exception as e:
             logging.error(f"Failed to stage {key}: {e}", exc_info=True)
-            # In a batch job, we continue to the next file instead of exiting
             continue
 
     logging.info("Staging batch complete.")
