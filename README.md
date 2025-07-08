@@ -129,6 +129,8 @@ The `TransformationTask` performs:
 
 ### 5.1 Order-Level KPIs (Daily)
 
+<img src='images/OrderKPIs.png' width='950'>
+
 Stored in `OrderKPIs` table:
 
 - **total_orders**: Count of unique orders.
@@ -138,6 +140,8 @@ Stored in `OrderKPIs` table:
 - **return_rate**: `(Returned Orders / Total Orders) * 100`.
 
 ### 5.2 Category-Level KPIs (Daily)
+
+<img src='images/CategoryKPIs.png'>
 
 Stored in `CategoryKPIs` table:
 
